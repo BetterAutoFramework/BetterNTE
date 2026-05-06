@@ -28,13 +28,9 @@
 
 > **[English](README_EN.md)** | [简体中文](README.md)
 
-> [!Tip]
->
-> This project is still in early development and may have bugs and rough edges. If you encounter any issues or have suggestions, feel free to submit an [Issue](https://github.com/BetterAutoFramework/BetterNTE/issues) or join the discussion on QQ group 1102341902.
+> 💡 This project is still in early development and may have bugs and rough edges. If you encounter any issues or have suggestions, feel free to submit an [Issue](https://github.com/BetterAutoFramework/BetterNTE/issues) or join the discussion on QQ group 1102341902.
 
-> [!Caution]
->
-> Please download the software from the official [Releases](https://github.com/BetterAutoFramework/BetterNTE/releases) page. Software obtained through unofficial channels may **contain malware** and is usually outdated.
+> ⚠️ Please download the software from the official [Releases](https://github.com/BetterAutoFramework/BetterNTE/releases) page. Software obtained through unofficial channels may **contain malware** and is usually outdated.
 
 ## Features
 
@@ -45,15 +41,14 @@
 
 ## Download
 
-Head to the [Releases](https://github.com/BetterAutoFramework/BetterNTE/releases) page to download the latest version.
+- [GitHub Releases](https://github.com/BetterAutoFramework/BetterNTE/releases)
+- [Quark Cloud Drive](https://pan.quark.cn/s/181b9c0e4819)
 
 ## Requirements
 
 - Windows 10 or later (64-bit)
 
-> [!NOTE]
->
-> The game must be running in `1920x1080` windowed mode.
+> 📌 The game must be running in `1920x1080` windowed mode.
 >
 > <div align="center">
 >   <img src="assets/snapshots/game_setting.png" alt="Game Settings" width="800"/>
@@ -77,6 +72,19 @@ Head to the [Releases](https://github.com/BetterAutoFramework/BetterNTE/releases
 |----------|-------------|
 | [Development Guide](docs/development_EN.md) | Environment setup, project structure, build & debug |
 | [Scripting Guide](docs/scripting-guide_EN.md) | manifest, `ctx` API, triggers, Flow definitions |
+
+## ⚠️ Disclaimer
+
+BetterNTE is an open-source, free automation tool intended for learning and personal use only.
+
+- **How it works**: Uses computer vision to recognize and interact with the game UI. It does not modify any game files, memory, or network data.
+- **Purpose**: Provides operational convenience for players. It does not disrupt game balance or provide unfair advantages.
+- **Use at your own risk**: Users are solely responsible for any consequences arising from the use of this tool, including but not limited to account penalties. The project and its developers are not liable for any damages.
+- **Commercial use**: Any third-party use of this software for boosting, paid services, or other commercial purposes is unrelated to this project.
+
+> **Note:** Per the [Erta Ring Fair Play Policy](https://yh.wanmei.com/news/gamebroad/20260202/260701.html), the use of any third-party tools to compromise game fairness is strictly prohibited. Violators may face deduction of rewards, account suspension, or permanent bans.
+>
+> By using this tool, you acknowledge that you fully understand the risks involved and accept all consequences.
 
 ## Acknowledgements
 
