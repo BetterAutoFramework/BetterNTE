@@ -42,7 +42,7 @@
 ## Download
 
 - [GitHub Releases](https://github.com/BetterAutoFramework/BetterNTE/releases)
-- [Quark Cloud Drive](https://pan.quark.cn/s/181b9c0e4819)
+- [Quark Cloud Drive](https://pan.quark.cn/s/be7f6bcea757)
 
 ## Requirements
 

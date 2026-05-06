@@ -56,7 +56,7 @@
 ## 下载
 
 - [GitHub Releases](https://github.com/BetterAutoFramework/BetterNTE/releases)
-- [夸克网盘](https://pan.quark.cn/s/181b9c0e4819)
+- [夸克网盘](https://pan.quark.cn/s/be7f6bcea757)
 
 ## 使用方法
 
