@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD028 MD029 MD033 MD041 -->
 
 <div align="center">
-  <img alt="LOGO" src="./crates/betternte-client/src-tauri/icons/icon.png" width="256" height="256" style="border-radius: 32px;" />
+  <img alt="LOGO" src="./assets/logo.png" width="256" height="256"  />
 
 
   <h1 align="center">BetterNTE</h1>
