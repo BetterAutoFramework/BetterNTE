@@ -1,0 +1,64 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicholasq/tauri-config-schema/main/tauri.schema.json",
+  "productName": "BetterNTE",
+  "version": "0.0.1",
+  "identifier": "com.betternte.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "BetterNTE",
+        "width": 1000,
+        "height": 680,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDgxNDc1M0FEOTYwMTUwRjIKUldUeVVBR1dyVk5IZ2FRVk9VSE1GNGlQdjJnSXpDdnlWQkl1Wm1OR2ZkVW52YUJpYXBkSUFoc04K",
+      "endpoints": [
+        "https://www.betternte.com/update.json",
+        "https://betternte.pages.dev/update.json"
+      ],
+      "windows": {
+        "installMode": "basicUi"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "resources": {
+      "../../../data/": "data",
+      "../../../assets/": "assets",
+      "opencv/opencv_world490.dll": "opencv_world490.dll",
+      "vc_redist.x64.exe": "vc_redist.x64.exe"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "nsis/installer.nsh"
+      }
+    }
+  }
+}

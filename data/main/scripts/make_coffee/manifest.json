@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "name": "make_coffee",
+  "display_name": "店长特供",
+  "version": "0.0.1",
+  "type": "solo_task",
+  "entry": "main.js",
+  "author": "BetterNTE",
+  "description": "进入一咖舍柜台前启动此脚本，先通关1-1，并且配置雇员（娜娜莉、海月、白藏）三选二，对应角色的都市特技升级到三级。",
+  "tags": ["异环"],
+  "permissions": ["template_match", "ocr", "click", "keyboard"],
+  "dependencies": [{ "path": "main/scripts/anti_detect" }],
+  "design_resolution": [1920, 1080],
+  "params_schema": {
+    "type": "object",
+    "properties": {
+      "count": {
+        "type": "integer",
+        "title": "循环次数",
+        "default": 999,
+        "minimum": 1,
+        "maximum": 9999
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "betternte-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Flow Engine: unified step + orchestration + sandbox"
+
+[dependencies]
+betternte-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+indexmap = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+semver = "1"
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "anti_detect",
+  "display_name": "反作弊检测库",
+  "version": "0.0.1",
+  "type": "library",
+  "entry": "main.js",
+  "author": "BetterAutoFramework",
+  "description": "人类行为模拟库，包装 click/sleep/keyPress 等操作，添加随机延迟和偏移",
+  "permissions": ["click", "keyboard", "screenshot"]
+}

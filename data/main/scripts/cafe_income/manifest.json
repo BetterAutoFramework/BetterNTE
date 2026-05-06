@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "name": "cafe_income",
+  "display_name": "自动领取一咖舍收益",
+  "version": "1.0.0",
+  "type": "solo_task",
+  "entry": "main.js",
+  "author": "BetterNTE",
+  "description": "打开都市大亨界面启动此脚本",
+  "tags": ["异环", "都市大亨", "一咖舍"],
+  "permissions": ["screenshot", "template_match", "click", "keyboard", "color_detect", "ocr"],
+  "design_resolution": [1920, 1080],
+  "dependencies": [{ "path": "main/scripts/lib" }, { "path": "main/scripts/anti_detect" }],
+  "params_schema": {
+    "type": "object",
+    "properties": {
+      "enable_restock": {
+        "type": "boolean",
+        "title": "自动补货",
+        "default": true
+      },
+      "max_rounds": {
+        "type": "integer",
+        "title": "最大轮询轮数",
+        "default": 25,
+        "minimum": 5,
+        "maximum": 100
+      },
+      "enter_key": {
+        "type": "string",
+        "title": "进入按键",
+        "default": "f5"
+      },
+      "exit_key": {
+        "type": "string",
+        "title": "退出按键",
+        "default": "esc"
+      }
+    }
+  }
+}

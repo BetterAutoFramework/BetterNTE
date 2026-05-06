@@ -1,0 +1,27 @@
+[package]
+name = "betternte-vision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Computer vision: OCR, template matching, color detection"
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[dependencies]
+betternte-core = { workspace = true }
+image = { workspace = true }
+opencv = { workspace = true }
+ort = { workspace = true }
+ndarray = "0.17"
+lru = "0.12"
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait.workspace = true
+anyhow = { workspace = true }
+
+[features]
+default = []
+opencv-template = []

@@ -1,0 +1,42 @@
+[package]
+name = "betternte-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BetterNTE game automation engine — library crate with Engine facade"
+
+[lib]
+name = "betternte_engine"
+path = "src/lib.rs"
+
+[dependencies]
+betternte-core.workspace = true
+betternte-capture.workspace = true
+betternte-input.workspace = true
+betternte-vision.workspace = true
+betternte-notify.workspace = true
+betternte-overlay.workspace = true
+betternte-script.workspace = true
+betternte-runtime.workspace = true
+windows = { workspace = true, features = [
+    "Win32_UI_WindowsAndMessaging",
+] }
+tokio.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+chrono = "0.4"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+chrono = "0.4"
+tempfile = "3"
+
+[features]
+default = []
+opencv-template = ["betternte-vision/opencv-template"]

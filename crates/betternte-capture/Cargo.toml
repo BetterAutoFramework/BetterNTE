@@ -1,0 +1,36 @@
+[package]
+name = "betternte-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Screen capture engines (BitBlt, DWM, WGC, ADB, MuMu, LD)"
+
+[dependencies]
+betternte-core.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+image.workspace = true
+
+# Async trait support
+async-trait.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+
+# Windows APIs
+windows = { workspace = true, features = ["Win32_Storage_Xps", "Graphics_Capture", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi"] }
+
+# Registry operations (for Win11 BitBlt fix)
+winreg.workspace = true
+
+# Windows Graphics Capture (persistent session, GPU-accelerated)
+windows-capture = "2.0"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+serde_json.workspace = true

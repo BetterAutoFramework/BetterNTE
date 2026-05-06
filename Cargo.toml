@@ -1,0 +1,94 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/betternte-core",
+    "crates/betternte-capture",
+    "crates/betternte-vision",
+    "crates/betternte-input",
+    "crates/betternte-helper",
+    "crates/betternte-notify",
+    "crates/betternte-overlay",
+    "crates/betternte-engine",
+    "crates/betternte-runtime",
+    "crates/betternte-script",
+    "crates/betternte-client/src-tauri",
+]
+
+exclude = ["tools/window-pixel-studio/src-tauri"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-only"
+repository = "https://github.com/BetterAutoFramework/BetterNTE"
+authors = ["BetterAutoFramework"]
+
+[workspace.dependencies]
+# 内部 crate
+betternte-core = { path = "crates/betternte-core" }
+betternte-capture = { path = "crates/betternte-capture" }
+betternte-vision = { path = "crates/betternte-vision" }
+betternte-input = { path = "crates/betternte-input" }
+betternte-helper = { path = "crates/betternte-helper" }
+betternte-notify = { path = "crates/betternte-notify" }
+betternte-overlay = { path = "crates/betternte-overlay" }
+betternte-engine = { path = "crates/betternte-engine" }
+betternte-runtime = { path = "crates/betternte-runtime" }
+betternte-script = { path = "crates/betternte-script" }
+
+# 异步运行时
+tokio = { version = "1.52", features = ["full"] }
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+async-trait = "0.1"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 错误处理
+anyhow = "1.0"
+thiserror = "2.0"
+
+# 截图
+xcap = "0.9"
+win-screenshot = "4.0"
+
+# 视觉识别
+opencv = { version = "0.98", features = ["clang-runtime"] }
+image = "0.25"
+ort = { version = "2.0.0-rc.12", features = ["cuda", "directml", "download-binaries"] }
+
+# 输入模拟
+enigo = "0.6"
+
+# Win32 API
+windows = "0.62"
+global-hotkey = "0.7"
+winreg = "0.55"
+
+# 模拟器
+adb_client = "3.2"
+
+# JS 引擎
+rquickjs = { version = "0.11", features = ["full-async", "parallel"] }
+
+# HTTP 服务器
+axum = "0.8"
+tower = "0.5"
+tower-http = "0.6"
+
+# HTTP 客户端
+reqwest = { version = "0.12", features = ["json"] }
+
+# WebSocket
+tokio-tungstenite = "0.26"
+
+# 配置
+config = "0.15"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }

@@ -1,0 +1,45 @@
+**/*.rs.bk
+
+# Exclude machine-local scratch only; keep lockfiles (pnpm-lock.yaml, Cargo.lock, etc.) committed.
+
+*.pdb
+*.wasm
+node_modules/
+dist/
+src-tauri/target/
+*.dmg
+*.msi
+*.exe
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.local
+
+# 大型二进制文件（本地打包时存在，不提交）
+crates/betternte-client/src-tauri/opencv/
+crates/betternte-client/src-tauri/vc_redist.x64.exe
+
+# Tauri updater signing key (never commit; pubkey lives in tauri.conf.json)
+crates/betternte-client/src-tauri/updater.key
+
+.claude/
+.hermes/
+.cargo/
+target/
+assets/models/
+
+# 不提交
+vendor/
+
+# Garbage from heredoc accidents
+dilate
+erode
+screenshot_*.png
+
+# VitePress
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+# 临时分析
+docs/analysis/

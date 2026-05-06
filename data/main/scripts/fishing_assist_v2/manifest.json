@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "name": "fishing_assist_v2",
+  "display_name": "钓鱼辅助V2",
+  "version": "1.1.1",
+  "type": "solo_task",
+  "entry": "main.js",
+  "author": "BetterNTE",
+  "description": "先进入钓鱼准备界面再启动，界面右下角有鱼钩和鱼饵图标。脚本自动购买和切换鱼饵，自动出售鱼获。",
+  "tags": ["异环"],
+  "permissions": [
+    "screenshot",
+    "template_match",
+    "click",
+    "keyboard",
+    "ocr"
+  ],
+  "dependencies": [{ "path": "main/scripts/anti_detect" }],
+  "params_schema": {
+    "type": "object",
+    "properties": {
+      "control_mode": {
+        "type": "string",
+        "title": "控制模式",
+        "description": "pulse=快速点按，hold=长按跟手，track=跟踪短点",
+        "enum": ["pulse", "hold", "track"],
+        "default": "pulse"
+      },
+      "deadzone": {
+        "type": "integer",
+        "title": "死区(px)",
+        "description": "偏移小于此值时不修正，越小越灵敏",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 10
+      },
+      "max_retry": {
+        "type": "integer",
+        "title": "最大重试次数",
+        "description": "识别不完整时的最大重试次数",
+        "minimum": 1,
+        "maximum": 30,
+        "default": 10
+      },
+      "sensitivity": {
+        "type": "string",
+        "title": "灵敏度预设",
+        "description": "conservative=保守稳定，balanced=均衡，aggressive=激进快速",
+        "enum": ["conservative", "balanced", "aggressive"],
+        "default": "balanced"
+      },
+      "bait_buy_count": {
+        "type": "integer",
+        "title": "鱼饵购买数量",
+        "description": "每次在渔具商店购买鱼饵的点击次数",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 3
+      },
+      "sell_count": {
+        "type": "integer",
+        "title": "出售次数",
+        "description": "每次出售鱼获时点击出售按钮的次数",
+        "minimum": 1,
+        "maximum": 20,
+        "default": 1
+      }
+    },
+    "additionalProperties": false
+  }
+}

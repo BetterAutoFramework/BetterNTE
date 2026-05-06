@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+@theme {
+  /* Fluent Design 2 / WinUI 3 Dark Theme (default) */
+  --color-background: oklch(0.145 0.01 260);
+  --color-surface: oklch(0.18 0.01 260);
+  --color-surface-hover: oklch(0.21 0.01 260);
+  --color-card: oklch(0.165 0.01 260);
+  --color-card-hover: oklch(0.19 0.01 260);
+  --color-border: oklch(0.25 0.01 260);
+  --color-border-subtle: oklch(0.22 0.01 260);
+
+  --color-primary: oklch(0.55 0.15 250);
+  --color-primary-hover: oklch(0.60 0.15 250);
+  --color-primary-foreground: oklch(0.98 0 0);
+
+  --color-foreground: oklch(0.92 0.005 260);
+  --color-foreground-secondary: oklch(0.65 0.01 260);
+  --color-foreground-tertiary: oklch(0.50 0.01 260);
+
+  --color-destructive: oklch(0.55 0.2 25);
+  --color-destructive-hover: oklch(0.60 0.2 25);
+
+  --color-success: oklch(0.60 0.18 145);
+  --color-warning: oklch(0.70 0.15 80);
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --font-sans: "MiSans", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+}
+
+/* Light theme overrides */
+.light {
+  --color-background: oklch(0.98 0.002 260);
+  --color-surface: oklch(0.96 0.003 260);
+  --color-surface-hover: oklch(0.93 0.005 260);
+  --color-card: oklch(0.99 0.002 260);
+  --color-card-hover: oklch(0.96 0.004 260);
+  --color-border: oklch(0.88 0.008 260);
+  --color-border-subtle: oklch(0.92 0.005 260);
+
+  --color-primary: oklch(0.50 0.16 250);
+  --color-primary-hover: oklch(0.45 0.16 250);
+  --color-primary-foreground: oklch(0.99 0 0);
+
+  --color-foreground: oklch(0.15 0.01 260);
+  --color-foreground-secondary: oklch(0.40 0.01 260);
+  --color-foreground-tertiary: oklch(0.55 0.01 260);
+
+  --color-destructive: oklch(0.55 0.22 25);
+  --color-destructive-hover: oklch(0.50 0.22 25);
+
+  --color-success: oklch(0.55 0.18 145);
+  --color-warning: oklch(0.60 0.18 80);
+}
+
+/* Custom scrollbar (Fluent style) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(0.35 0.01 260);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.45 0.01 260);
+}
+.light ::-webkit-scrollbar-thumb {
+  background: oklch(0.75 0.01 260);
+}
+.light ::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.65 0.01 260);
+}
+
+/* Selection color */
+::selection {
+  background: oklch(0.55 0.15 250 / 0.3);
+}
+
+/* Smooth transitions */
+* {
+  transition-property: background-color, border-color, color, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* Disable text selection on UI elements */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Tauri drag region */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a,
+[data-tauri-drag-region] input {
+  -webkit-app-region: no-drag;
+}

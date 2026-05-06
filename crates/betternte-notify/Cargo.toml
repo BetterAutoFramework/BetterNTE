@@ -1,0 +1,16 @@
+[package]
+name = "betternte-notify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Multi-channel notification system"
+
+[dependencies]
+betternte-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+async-trait.workspace = true

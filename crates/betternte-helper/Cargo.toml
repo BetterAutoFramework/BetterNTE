@@ -1,0 +1,37 @@
+[package]
+name = "betternte-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Helper utilities for BetterNTE"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+md-5 = "0.10"
+regex = "1"
+dirs = "6.0"
+chrono = { version = "0.4", features = ["serde"] }
+once_cell = "1.19"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[features]
+default = []
