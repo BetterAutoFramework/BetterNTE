@@ -11,6 +11,7 @@ members = [
     "crates/betternte-engine",
     "crates/betternte-runtime",
     "crates/betternte-script",
+    "crates/betternte-relay",
     "crates/betternte-client/src-tauri",
 ]
 
