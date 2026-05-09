@@ -28,9 +28,7 @@
 
 > **[简体中文](README.md)** | [English](README_EN.md)
 
-> 💡 本项目还处于早期开发阶段，可能存在诸多问题与不足。如果你在使用过程中遇到了 Bug、体验不佳、或有任何建议，**欢迎积极提交 [Issue](https://github.com/BetterAutoFramework/BetterNTE/issues) 反馈**，也可以加入 QQ 群一起讨论，帮助我们不断完善项目！
-
-> 💬 QQ 交流群: 1102341902
+> 💡 本项目还处于早期开发阶段，可能存在诸多问题与不足。如果你在使用过程中遇到了 Bug、体验不佳、或有任何建议，**欢迎积极提交 [Issue](https://github.com/BetterAutoFramework/BetterNTE/issues) 反馈**，帮助我们不断完善项目！
 
 > ⚠️ 请从官方 [Releases](https://github.com/BetterAutoFramework/BetterNTE/releases) 页面下载软件。通过非官方途径获取的软件可能**含有病毒**，并且一般不是最新的版本，请注意甄别。
 
