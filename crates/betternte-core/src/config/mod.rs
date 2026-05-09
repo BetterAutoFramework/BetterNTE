@@ -426,8 +426,6 @@ pub struct Subscription {
 /// Script roots and subscription list.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScriptConfig {
-    /// Data root directory (default `"data"`).
-    pub data_root: String,
     pub auto_update: bool,
     /// Registered subscriptions.
     pub subscriptions: Vec<Subscription>,
@@ -436,7 +434,6 @@ pub struct ScriptConfig {
 impl Default for ScriptConfig {
     fn default() -> Self {
         Self {
-            data_root: "data".into(),
             auto_update: false,
             subscriptions: vec![
                 Subscription {
@@ -471,7 +468,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
         #[derive(Deserialize)]
         #[serde(field_identifier, rename_all = "snake_case")]
         enum Field {
-            DataRoot,
             Directory,
             TriggersDirectory,
             TaskGroupsDirectory,
@@ -495,7 +491,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
             where
                 M: MapAccess<'de>,
             {
-                let mut data_root: Option<String> = None;
                 let mut _directory: Option<String> = None;
                 let mut auto_update = false;
                 let mut subscriptions: Option<Vec<Subscription>> = None;
@@ -503,9 +498,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
 
                 while let Some(key) = map.next_key()? {
                     match key {
-                        Field::DataRoot => {
-                            data_root = Some(map.next_value()?);
-                        }
                         Field::Directory => {
                             _directory = Some(map.next_value()?);
                         }
@@ -531,7 +523,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
                 // Modern layout: subscriptions array present.
                 if let Some(subs) = subscriptions {
                     return Ok(ScriptConfig {
-                        data_root: data_root.unwrap_or_else(|| "data".into()),
                         auto_update,
                         subscriptions: subs,
                     });
@@ -556,7 +547,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
                         })
                         .collect();
                     return Ok(ScriptConfig {
-                        data_root: data_root.unwrap_or_else(|| "data".into()),
                         auto_update,
                         subscriptions: subs,
                     });
@@ -564,7 +554,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
 
                 // Oldest layout: only generic directory metadata.
                 Ok(ScriptConfig {
-                    data_root: data_root.unwrap_or_else(|| "data".into()),
                     auto_update,
                     subscriptions: ScriptConfig::default().subscriptions,
                 })

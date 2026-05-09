@@ -367,7 +367,6 @@ export function mapEngineConfig(raw: Record<string, unknown>): EngineConfig {
       font_size: Number(overlay.font_size ?? 14),
     },
     scripts: {
-      data_root: String(scripts.data_root ?? "data"),
       auto_update: Boolean(scripts.auto_update ?? false),
       subscriptions: Array.isArray(scripts.subscriptions)
         ? (scripts.subscriptions as Array<Record<string, unknown>>).map((s) => ({

@@ -1,27 +1,16 @@
 //! Settings commands — config / capture methods / subscriptions / windows / logs
 
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use tauri::AppHandle;
 
 use betternte_core::config::NotificationConfig;
-use betternte_core::EngineConfig;
 use betternte_engine::notify_builder;
 use serde::{Deserialize, Serialize};
 
 use crate::{persist_engine_config_file, save_config, AppState};
 
 static WINDOW_QUERY_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-
-fn resolve_data_root_path(cfg: &EngineConfig, base_dir: &Path) -> PathBuf {
-    let p = PathBuf::from(cfg.scripts.data_root.clone());
-    if p.is_absolute() {
-        p
-    } else {
-        base_dir.join(p)
-    }
-}
 
 /// Get the current engine config.
 #[tauri::command]

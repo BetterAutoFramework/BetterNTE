@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod config;
 pub mod consts;
+pub mod data_root;
 pub mod error;
 pub mod event;
 pub mod image;
@@ -24,6 +25,7 @@ pub use config::{
     OverlayMode, ScriptConfig, SecurityConfig, SecurityMode, ServerChanConfig, Subscription,
     TelegramConfig,
 };
+pub use data_root::DataRoot;
 pub use consts::*;
 pub use error::{CoreError, Result};
 pub use event::{EngineEvent, ErrorSeverity, TaskStopReason};

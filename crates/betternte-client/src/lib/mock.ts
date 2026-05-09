@@ -262,7 +262,6 @@ export const mockConfig: EngineConfig = {
     font_size: 14,
   },
   scripts: {
-    data_root: "data",
     auto_update: true,
     subscriptions: [
       { name: "官方源", directory: "main", enabled: true, auto_update: true },

@@ -268,7 +268,6 @@ export interface Subscription {
 }
 
 export interface ScriptConfig {
-  data_root: string;
   auto_update: boolean;
   subscriptions: Subscription[];
 }

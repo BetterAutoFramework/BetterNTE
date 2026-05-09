@@ -83,11 +83,14 @@ impl EngineBuilder {
         let event_bus = EventBus::new(1024);
         info!(base_dir = %base_dir.display(), "Engine created (idle)");
 
-        // Initialize ScriptRuntime with data_root as scripts_dir
-        let data_root = Engine::resolve_path(&config.scripts.data_root, &base_dir);
+        // Resolve data root with three-directory merge
+        let data_root = betternte_core::DataRoot::new(&base_dir);
+
+        // Initialize ScriptRuntime with primary data root as scripts_dir
+        let primary_data_root = data_root.primary().clone();
 
         let mut runtime =
-            betternte_script::ScriptRuntime::new(env!("CARGO_PKG_VERSION"), data_root)?;
+            betternte_script::ScriptRuntime::new(env!("CARGO_PKG_VERSION"), primary_data_root)?;
         runtime.register_engine(
             "js",
             Box::new(betternte_script::QuickJsEngine::new(env!(
@@ -95,8 +98,8 @@ impl EngineBuilder {
             ))),
         );
 
-        let engine_storage_dir = base_dir
-            .join("data")
+        let engine_storage_dir = data_root
+            .primary()
             .join("local")
             .join("scripts")
             .join("_engine");
@@ -187,6 +190,7 @@ impl EngineBuilder {
             scripts_store: Vec::new(),
             triggers_store: Vec::new(),
             base_dir,
+            data_root,
             runtime: Some(runtime_for_runner),
             script_ctx: Some(ctx),
             capture_stop: None,

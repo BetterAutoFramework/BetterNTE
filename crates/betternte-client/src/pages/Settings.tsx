@@ -969,20 +969,9 @@ function ScriptSettings({
     <CardExpander
       icon={<Code className="w-4 h-4" />}
       title="订阅管理"
-      description="数据目录与订阅源设置"
+      description="订阅源设置"
       defaultOpen={true}
     >
-      <SettingRow
-        label="数据根目录"
-        description="存放订阅与脚本数据。相对路径：开发版相对仓库根；安装版相对本机应用数据目录（首次启动会从安装包复制自带的 data、assets 到该目录）"
-      >
-        <FolderPicker
-          value={config.scripts.data_root}
-          onChange={(v) => onChange("scripts", "data_root", v)}
-          placeholder="选择数据根目录..."
-          directory
-        />
-      </SettingRow>
       <SettingRow label="自动更新" description="启动时检查订阅源更新">
         <Toggle
           checked={config.scripts.auto_update}

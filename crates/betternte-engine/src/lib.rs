@@ -67,6 +67,7 @@ pub struct Engine {
     pub(crate) scripts_store: Vec<loader::ScriptEntry>,
     pub(crate) triggers_store: Vec<loader::ScriptEntry>,
     pub(crate) base_dir: std::path::PathBuf,
+    pub(crate) data_root: betternte_core::DataRoot,
     pub(crate) runtime: Option<Arc<betternte_script::ScriptRuntime>>,
     pub(crate) script_ctx: Option<Arc<script_ctx::EngineScriptContext>>,
     pub(crate) capture_stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -389,9 +390,9 @@ impl Engine {
         self.script_ctx.clone()
     }
 
-    /// 获取数据根目录绝对路径。
-    pub fn data_root(&self) -> std::path::PathBuf {
-        Self::resolve_path(&self.config.scripts.data_root, &self.base_dir)
+    /// Get the data root with three-directory merge support.
+    pub fn data_root(&self) -> &betternte_core::DataRoot {
+        &self.data_root
     }
 
     /// Root used to resolve relative paths in config (repo root in dev, per-user data when packaged).
@@ -399,9 +400,9 @@ impl Engine {
         self.base_dir.as_path()
     }
 
-    /// 获取脚本目录绝对路径（兼容旧接口，返回 data_root）。
+    /// Get the primary scripts directory (highest-priority data root).
     pub fn scripts_dir(&self) -> std::path::PathBuf {
-        self.data_root()
+        self.data_root.primary().clone()
     }
 
     /// 按引擎工作区解析配置里的路径片段（绝对路径保持不变，否则相对 `workspace`）。
@@ -425,7 +426,7 @@ impl Engine {
         }
     }
 
-    /// 确保"本地源"订阅存在，并创建目录结构。
+    /// Ensure "local" subscription exists and create directory structure.
     fn ensure_local_subscription(&mut self) {
         let has_local = self
             .config
@@ -447,35 +448,34 @@ impl Engine {
                 });
         }
 
-        // Create directory structure
-        let data_root = self.data_root();
-        for sub_dir in &["scripts", "triggers", "task-groups", "flows"] {
-            let dir = data_root.join("local").join(sub_dir);
-            let _ = std::fs::create_dir_all(&dir);
+        // Create directory structure in the primary data root
+        if let Err(e) = self.data_root.ensure_dirs() {
+            tracing::warn!(error = %e, "Failed to ensure local data directories");
         }
     }
 
-    /// 获取本地源目录（用户新建内容存放处）。
+    /// Get the local source directory (for writing user-created content).
     pub(crate) fn local_dir(&self, sub_dir: &str) -> std::path::PathBuf {
-        self.data_root().join("local").join(sub_dir)
+        self.data_root.primary().join("local").join(sub_dir)
     }
 
-    /// 获取所有已启用订阅源的 scripts/ 和 triggers/ 目录（供 ScriptRuntime 使用）。
+    /// Get all enabled subscription scripts/ and triggers/ directories across all data roots.
     pub(crate) fn all_script_dirs(&self) -> Vec<std::path::PathBuf> {
         let mut dirs = Vec::new();
-        let data_root = self.data_root();
-        dirs.extend(
-            self.config
-                .scripts
-                .subscriptions
-                .iter()
-                .filter(|s| s.enabled)
-                .flat_map(|s| {
-                    let base = data_root.join(&s.directory);
-                    vec![base.join("scripts"), base.join("triggers")]
-                }),
-        );
-
+        for sub in &self.config.scripts.subscriptions {
+            if !sub.enabled {
+                continue;
+            }
+            for suffix in &["scripts", "triggers"] {
+                let sub_path = format!("{}/{}", sub.directory, suffix);
+                let entries = self.data_root.collect_entries(&sub_path);
+                for (_relative, absolute) in entries {
+                    if absolute.is_dir() {
+                        dirs.push(absolute);
+                    }
+                }
+            }
+        }
         dirs
     }
 
@@ -487,7 +487,6 @@ impl Engine {
     pub async fn set_config(&mut self, config: EngineConfig) -> Result<()> {
         let old = self.config.clone();
         let was_running = self.is_running();
-        let data_root_changed = old.scripts.data_root != config.scripts.data_root;
         let subs_changed = old.scripts.subscriptions != config.scripts.subscriptions;
         let notify_changed = !config_notifications_equal(&old.notifications, &config.notifications);
         let runtime_restart_required = config_runtime_restart_required(&old, &config);
@@ -506,7 +505,7 @@ impl Engine {
             ));
         }
         self.ensure_local_subscription();
-        if data_root_changed || subs_changed {
+        if subs_changed {
             let _ = self.reload_scripts();
             self.load_flows();
             let _ = self.load_task_groups();
