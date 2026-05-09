@@ -13,6 +13,7 @@ pub mod error;
 pub mod loader;
 pub mod manifest;
 pub mod manifest_permissions;
+pub mod plugin;
 pub mod quickjs;
 pub mod runtime;
 
@@ -29,5 +30,6 @@ pub use error::{ScriptError, ScriptResult};
 pub use loader::{ScriptInfo, ScriptLoader};
 pub use manifest::{EngineVersionReq, Manifest, ScriptDependency};
 pub use manifest_permissions::manifest_permission_key_for_ctx_method;
+pub use plugin::{PluginInfo, PluginRegistry};
 pub use quickjs::QuickJsEngine;
 pub use runtime::ScriptRuntime;

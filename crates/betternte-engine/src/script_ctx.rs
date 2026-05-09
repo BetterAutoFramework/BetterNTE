@@ -174,6 +174,9 @@ pub struct EngineScriptContext {
 
     // Resolution scaling: design [w, h] from manifest.json. None = no scaling.
     design_resolution: std::sync::Mutex<Option<(u32, u32)>>,
+
+    // Plugin system
+    plugin_registry: Arc<tokio::sync::RwLock<betternte_script::PluginRegistry>>,
 }
 
 impl EngineScriptContext {
@@ -240,6 +243,7 @@ impl EngineScriptContext {
             manifest_perm_stack: std::sync::Mutex::new(Vec::new()),
             manifest_security_strict: AtomicBool::new(true),
             design_resolution: std::sync::Mutex::new(None),
+            plugin_registry: Arc::new(tokio::sync::RwLock::new(betternte_script::PluginRegistry::new())),
         }
     }
 
@@ -446,6 +450,23 @@ impl EngineScriptContext {
         >,
     ) {
         *self.library_runner.lock().unwrap() = Some(runner);
+    }
+
+    /// Load plugins from data root directories.
+    pub async fn load_plugins(&self, data_roots: &[std::path::PathBuf]) {
+        let mut registry = self.plugin_registry.write().await;
+        if let Err(e) = registry.load_from_dirs(data_roots) {
+            tracing::warn!("Failed to load plugins: {}", e);
+        }
+        let count = registry.list().len();
+        if count > 0 {
+            tracing::info!("Loaded {} plugin(s)", count);
+        }
+    }
+
+    /// Get a handle to the plugin registry.
+    pub fn plugin_registry_handle(&self) -> Arc<tokio::sync::RwLock<betternte_script::PluginRegistry>> {
+        self.plugin_registry.clone()
     }
 
     fn parse_mouse_button_name(name: &str) -> Option<betternte_core::MouseButton> {
@@ -2743,6 +2764,26 @@ impl ScriptContext for EngineScriptContext {
     async fn storage_keys(&self) -> Result<Vec<String>> {
         let data = self.read_storage_data().await;
         Ok(data.keys().cloned().collect())
+    }
+
+    // === Plugin system ===
+
+    async fn plugin_call(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        args_json: &str,
+    ) -> Result<String> {
+        let args: Vec<serde_json::Value> = serde_json::from_str(args_json).unwrap_or_default();
+        let registry = self.plugin_registry.read().await;
+        let result = registry.call(plugin_id, method, args)?;
+        Ok(serde_json::to_string(&result)?)
+    }
+
+    async fn plugin_list(&self) -> Result<String> {
+        let registry = self.plugin_registry.read().await;
+        let list = registry.list();
+        Ok(serde_json::to_string(&list)?)
     }
 }
 

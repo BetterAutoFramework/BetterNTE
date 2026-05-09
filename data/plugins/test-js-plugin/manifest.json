@@ -1,0 +1,8 @@
+{
+  "id": "test-js-plugin",
+  "name": "Test JS Plugin",
+  "version": "1.0.0",
+  "description": "A simple test plugin demonstrating the JS plugin system",
+  "type": "js",
+  "entry": "index.js"
+}

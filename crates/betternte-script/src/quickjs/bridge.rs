@@ -707,6 +707,66 @@ pub fn register_ctx_api<'js>(
 
     globals.set("ctx", ctx_obj)?;
 
+    // ━━━ Plugin proxy: ctx.plugin.<pluginId>.<method>(...args) ━━━
+    // Uses a JS Proxy that intercepts property access to lazily create
+    // per-plugin sub-proxies. Each sub-proxy intercepts method calls and
+    // routes them through __invoke('pluginCall', ...).
+    let plugin_proxy_code = r#"
+    (function() {
+        var pluginCache = {};
+        ctx.plugin = new Proxy({}, {
+            get: function(target, prop) {
+                if (typeof prop === 'symbol') return undefined;
+                if (prop === 'then') return undefined; // avoid Promise detection
+                if (pluginCache[prop]) return pluginCache[prop];
+                var pluginId = prop;
+                var pluginProxy = new Proxy({}, {
+                    get: function(_, method) {
+                        if (typeof method === 'symbol') return undefined;
+                        if (method === 'then') return undefined;
+                        return function() {
+                            var args = Array.prototype.slice.call(arguments);
+                            var p = new Promise(function(resolve, reject) {
+                                try {
+                                    var result = __invoke('pluginCall', JSON.stringify([pluginId, method, args]));
+                                    if (typeof result === 'string' && result.indexOf('__ERROR__:') === 0) {
+                                        reject(new Error(result.substring(10)));
+                                    } else {
+                                        resolve(JSON.parse(result));
+                                    }
+                                } catch(e) {
+                                    reject(e);
+                                }
+                            });
+                            return p;
+                        };
+                    }
+                });
+                pluginCache[prop] = pluginProxy;
+                return pluginProxy;
+            }
+        });
+        ctx.pluginList = function() {
+            var p = new Promise(function(resolve, reject) {
+                try {
+                    var result = __invoke('pluginList', '[]');
+                    if (typeof result === 'string' && result.indexOf('__ERROR__:') === 0) {
+                        reject(new Error(result.substring(10)));
+                    } else {
+                        resolve(JSON.parse(result));
+                    }
+                } catch(e) {
+                    reject(e);
+                }
+            });
+            return p;
+        };
+    })()
+    "#;
+    if let Err(e) = js_ctx.eval::<(), _>(plugin_proxy_code) {
+        tracing::warn!("Failed to inject plugin proxy: {}", e);
+    }
+
     // Library export helper: assigns to both `exports` and `__libraryExports` (pure JS, no __invoke).
     let library_register_code = r#"
     (function () {
@@ -1141,6 +1201,19 @@ async fn dispatch_ctx_method(
         }
         "storageDelete"   => dispatch_void!(ctx, storage_delete, &arg_str(args, 0)),
         "storageKeys"     => dispatch_serde!(ctx, storage_keys),
+
+        // ━━━ Plugin ━━━
+        "pluginCall" => {
+            let plugin_id = arg_str(args, 0);
+            let method = arg_str(args, 1);
+            let args_json = args.get(2).and_then(|v| v.as_str()).unwrap_or("[]").to_string();
+            let result = ctx.plugin_call(&plugin_id, &method, &args_json).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::from_str(&result).unwrap_or(serde_json::Value::Null))
+        }
+        "pluginList" => {
+            let result = ctx.plugin_list().await.map_err(|e| e.to_string())?;
+            Ok(serde_json::from_str(&result).unwrap_or(serde_json::Value::Array(vec![])))
+        }
 
         // ━━━ Post (async job) ━━━
         "postCapture" => {

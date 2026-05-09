@@ -1295,6 +1295,43 @@ impl ScriptContext for DebugScriptContext {
         }
         result
     }
+
+    async fn plugin_call(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        args_json: &str,
+    ) -> Result<String> {
+        let id = self.next_id();
+        let args = serde_json::json!({ "plugin_id": plugin_id, "method": method, "args_json": args_json });
+        let trace = self.make_trace(id, "plugin", "plugin_call", args, None);
+        let start = std::time::Instant::now();
+
+        let result = self.inner.plugin_call(plugin_id, method, args_json).await;
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        match &result {
+            Ok(val) => self.finish_trace_ok(trace, Some(format!("{} bytes", val.len())), elapsed, None),
+            Err(e) => self.finish_trace_err(trace, e.to_string(), elapsed),
+        }
+        result
+    }
+
+    async fn plugin_list(&self) -> Result<String> {
+        let id = self.next_id();
+        let args = serde_json::json!({});
+        let trace = self.make_trace(id, "plugin", "plugin_list", args, None);
+        let start = std::time::Instant::now();
+
+        let result = self.inner.plugin_list().await;
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        match &result {
+            Ok(val) => self.finish_trace_ok(trace, Some(format!("{} bytes", val.len())), elapsed, None),
+            Err(e) => self.finish_trace_err(trace, e.to_string(), elapsed),
+        }
+        result
+    }
 }
 
 #[cfg(test)]

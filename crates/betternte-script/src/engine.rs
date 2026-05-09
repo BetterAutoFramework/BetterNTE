@@ -308,6 +308,21 @@ pub trait ScriptContext: Send + Sync {
     async fn storage_set(&self, key: &str, value: serde_json::Value) -> Result<()>;
     async fn storage_delete(&self, key: &str) -> Result<()>;
     async fn storage_keys(&self) -> Result<Vec<String>>;
+
+    // === 插件 (Plugin system) ===
+    /// Call a method on a loaded plugin.
+    ///
+    /// `args_json` is a JSON-encoded `Vec<Value>` of positional arguments.
+    /// Returns the JSON-encoded result string.
+    async fn plugin_call(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        args_json: &str,
+    ) -> Result<String>;
+
+    /// List all loaded plugins. Returns JSON-encoded `Vec<PluginInfo>`.
+    async fn plugin_list(&self) -> Result<String>;
 }
 
 /// Image recognition capabilities in script context.

@@ -150,6 +150,12 @@ impl Engine {
             }
         }
 
+        // Load plugins from data roots
+        if let Some(ref ctx) = self.script_ctx {
+            let data_roots = self.data_root.roots().to_vec();
+            ctx.load_plugins(&data_roots).await;
+        }
+
         // Auto-enable triggers from config
         self.sync_trigger_states().await;
 

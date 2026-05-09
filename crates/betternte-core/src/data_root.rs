@@ -114,6 +114,7 @@ impl DataRoot {
             "local/triggers",
             "local/task-groups",
             "local/flows",
+            "plugins",
         ] {
             std::fs::create_dir_all(primary.join(subdir))?;
         }
