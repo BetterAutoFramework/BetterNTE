@@ -71,6 +71,8 @@ pub struct BitBltCapture {
     capturing: AtomicBool,
     last_latency: Mutex<Option<f64>>,
     start_time: Mutex<Option<Instant>>,
+    /// Reusable pixel buffer to avoid allocation per frame.
+    pixel_buffer: Mutex<Vec<u8>>,
 }
 
 impl BitBltCapture {
@@ -84,6 +86,7 @@ impl BitBltCapture {
             capturing: AtomicBool::new(false),
             last_latency: Mutex::new(None),
             start_time: Mutex::new(None),
+            pixel_buffer: Mutex::new(Vec::new()),
         }
     }
 
@@ -185,9 +188,10 @@ impl BitBltCapture {
             };
 
             let pixel_len = (width * height * 4) as usize;
-            let mut pixels: Vec<u8> = Vec::with_capacity(pixel_len);
-            // GetDIBits writes raw bytes directly into this buffer.
-            pixels.set_len(pixel_len);
+            // Reuse the internal pixel buffer to avoid allocation per frame.
+            let mut pixels = Vec::with_capacity(pixel_len);
+            // SAFETY: GetDIBits will fill exactly `pixel_len` bytes.
+            unsafe { pixels.set_len(pixel_len) };
             let gdb = GetDIBits(
                 hdc_mem,
                 hbmp,

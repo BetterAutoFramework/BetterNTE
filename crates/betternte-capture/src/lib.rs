@@ -28,6 +28,7 @@ use std::sync::OnceLock;
 
 pub mod bitblt;
 pub mod buffer;
+pub mod frame_pool;
 pub mod dxgi_dup;
 pub mod error;
 pub mod factory;
@@ -40,6 +41,7 @@ pub mod window;
 // Re-exports
 pub use bitblt::BitBltCapture;
 pub use buffer::FrameRingBuffer;
+pub use frame_pool::{FramePool, PooledBuffer};
 pub use dxgi_dup::DxgiDupCapture;
 pub use error::{CaptureError, Result};
 pub use factory::{

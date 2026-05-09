@@ -24,6 +24,7 @@ pub mod error;
 pub mod feature;
 pub mod geometry;
 pub mod image_utils;
+pub mod mat_cache;
 pub mod models;
 pub mod morphology;
 pub mod pixel_math;
@@ -34,6 +35,7 @@ pub use color::ColorDetectorImpl;
 pub use config::{MatchConfig, OcrConfig};
 pub use error::VisionError;
 pub use image_utils::ImagePreprocessor;
+pub use mat_cache::{CachedMat, MatCache};
 
 // Template exports
 pub use template::{MatchResult, OpenCvTemplateMatcher, TemplateCache, TemplateMatcher};

@@ -1,6 +1,7 @@
 //! Template matcher using OpenCV matchTemplate.
 
 use crate::config::MatchConfig;
+use crate::mat_cache::MatCache;
 use crate::template::cache::TemplateCache;
 use crate::template::{MatchResult, TemplateMatcher};
 use async_trait::async_trait;
@@ -16,6 +17,7 @@ use std::sync::Arc;
 pub struct OpenCvTemplateMatcher {
     config: MatchConfig,
     cache: Arc<TemplateCache>,
+    mat_cache: MatCache,
 }
 
 impl OpenCvTemplateMatcher {
@@ -27,6 +29,7 @@ impl OpenCvTemplateMatcher {
         Self {
             config,
             cache: Arc::new(TemplateCache::new(16)),
+            mat_cache: MatCache::new(3),
         }
     }
 
@@ -93,6 +96,7 @@ impl OpenCvTemplateMatcher {
             self.config.default_threshold
         };
 
+        // Acquire image and template matrices from cache or create new ones.
         let (img_mat, tpl_mat, tpl_w, tpl_h) = if params.grayscale {
             let img_gray = Self::to_gray_u8(image);
             let tpl_gray = Self::to_gray_u8(template);
@@ -101,6 +105,8 @@ impl OpenCvTemplateMatcher {
             }
             let w = tpl_gray.width();
             let h = tpl_gray.height();
+            // For grayscale, we create new Mats from the image data.
+            // The MatCache is used for the corr result matrix.
             (Self::gray_to_mat(&img_gray)?, Self::gray_to_mat(&tpl_gray)?, w, h)
         } else {
             let img_bgr = Self::to_bgr_mat(image)?;
@@ -113,7 +119,12 @@ impl OpenCvTemplateMatcher {
             (img_bgr, tpl_bgr, w, h)
         };
 
-        let mut corr = Mat::default();
+        // Get the correlation result matrix from cache.
+        // The size depends on the image and template sizes.
+        let corr_rows = img_mat.rows() - tpl_mat.rows() + 1;
+        let corr_cols = img_mat.cols() - tpl_mat.cols() + 1;
+        let mut corr = self.mat_cache.acquire(corr_rows, corr_cols, core::CV_32FC1)?;
+        
         let (method, use_mask) = Self::resolve_match_method(params);
         if use_mask {
             let mask_img = Self::build_template_mask(template, params);
@@ -167,6 +178,10 @@ impl OpenCvTemplateMatcher {
         if matches.len() > cap {
             matches.truncate(cap);
         }
+        
+        // Return the correlation matrix to the cache for reuse.
+        self.mat_cache.release(corr);
+        
         Ok(matches)
     }
 
