@@ -250,7 +250,9 @@ impl WasmPlugin {
             )
         })?;
 
-        let engine = wasmtime::Engine::default();
+        let mut engine_config = wasmtime::Config::new();
+        engine_config.consume_fuel(true);
+        let engine = wasmtime::Engine::new(&engine_config)?;
         let module = wasmtime::Module::new(&engine, &wasm_bytes)?;
 
         // Instantiate temporarily to read plugin info
@@ -308,6 +310,8 @@ impl WasmPlugin {
     /// (wasmtime::Store is not Send by default).
     fn call_wasm(&self, method: &str, args: Vec<serde_json::Value>) -> Result<serde_json::Value> {
         let mut store = wasmtime::Store::new(&self.engine, ());
+        // Set fuel limit to prevent infinite loops (10M instructions ≈ ~1s on modern CPU)
+        store.set_fuel(10_000_000).ok(); // May fail if fuel not supported, ignore
         let instance = wasmtime::Linker::new(&self.engine).instantiate(&mut store, &self.module)?;
 
         let memory = instance
@@ -357,8 +361,15 @@ impl WasmPlugin {
         }
         let result_str = std::str::from_utf8(&mem_data[result_ptr..result_ptr + result_len])?;
 
-        serde_json::from_str(result_str)
-            .map_err(|e| anyhow::anyhow!("Failed to parse WASM result as JSON: {}", e))
+        let result: serde_json::Value = serde_json::from_str(result_str)
+            .map_err(|e| anyhow::anyhow!("Failed to parse WASM result as JSON: {}", e))?;
+
+        // Check for standard error response from the plugin
+        if let Some(error_msg) = result.get("error").and_then(|v| v.as_str()) {
+            return Err(anyhow::anyhow!("WASM plugin returned error: {}", error_msg));
+        }
+
+        Ok(result)
     }
 }
 
@@ -407,6 +418,8 @@ type CallFn = unsafe extern "C" fn(
 ) -> *const std::ffi::c_char;
 type FreeFn = unsafe extern "C" fn(*const std::ffi::c_char);
 
+use std::sync::Mutex;
+
 pub struct FfiPlugin {
     manifest: PluginManifest,
     /// Keep the dynamic library loaded for the lifetime of the plugin.
@@ -416,6 +429,8 @@ pub struct FfiPlugin {
     info_fn: InfoFn,
     call_fn: CallFn,
     free_fn: Option<FreeFn>,
+    /// Serialize FFI calls to prevent data races on static buffers.
+    call_lock: Mutex<()>,
 }
 
 impl FfiPlugin {
@@ -481,6 +496,7 @@ impl FfiPlugin {
                 info_fn,
                 call_fn,
                 free_fn,
+                call_lock: Mutex::new(()),
             })
         }
     }
@@ -508,12 +524,23 @@ impl Plugin for FfiPlugin {
             ));
         }
 
-        unsafe {
-            let name_cstr = std::ffi::CString::new(method)?;
-            let args_json = serde_json::to_string(&args)?;
-            let args_cstr = std::ffi::CString::new(args_json)?;
+        // Serialize arguments before acquiring the lock
+        let name_cstr = std::ffi::CString::new(method)?;
+        let args_json = serde_json::to_string(&args)?;
+        let args_cstr = std::ffi::CString::new(args_json)?;
 
-            let result_ptr = (self.call_fn)(name_cstr.as_ptr(), args_cstr.as_ptr());
+        // Acquire lock to serialize FFI calls (prevents data races on static buffers)
+        let _guard = self.call_lock.lock().map_err(|e| {
+            anyhow::anyhow!("FFI plugin '{}' call lock poisoned: {}", self.manifest.id, e)
+        })?;
+
+        // Wrap the unsafe FFI call in catch_unwind to protect against panics
+        let call_fn = self.call_fn;
+        let free_fn = self.free_fn;
+        let plugin_id = &self.manifest.id;
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            let result_ptr = (call_fn)(name_cstr.as_ptr(), args_cstr.as_ptr());
 
             if result_ptr.is_null() {
                 return Err(anyhow::anyhow!(
@@ -531,15 +558,41 @@ impl Plugin for FfiPlugin {
                 )
             })?;
 
-            let result: serde_json::Value = serde_json::from_str(result_str)?;
+            let result_json = result_str.to_string();
 
             // Free the result if a free function is available
-            if let Some(free) = self.free_fn {
+            if let Some(free) = free_fn {
                 free(result_ptr);
             }
 
-            Ok(result)
+            Ok(result_json)
+        }));
+
+        let result_str = match result {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "FFI plugin '{}' panicked during call to method '{}'",
+                    plugin_id,
+                    method
+                ));
+            }
+        };
+
+        let result: serde_json::Value = serde_json::from_str(&result_str)?;
+
+        // Check for standard error response from the plugin
+        if let Some(error_msg) = result.get("error").and_then(|v| v.as_str()) {
+            return Err(anyhow::anyhow!(
+                "FFI plugin '{}' method '{}' returned error: {}",
+                plugin_id,
+                method,
+                error_msg
+            ));
         }
+
+        Ok(result)
     }
 }
 

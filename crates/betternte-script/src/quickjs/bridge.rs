@@ -1206,7 +1206,10 @@ async fn dispatch_ctx_method(
         "pluginCall" => {
             let plugin_id = arg_str(args, 0);
             let method = arg_str(args, 1);
-            let args_json = args.get(2).and_then(|v| v.as_str()).unwrap_or("[]").to_string();
+            // args[2] is a JSON Array (not a string) — serialize it back to JSON
+            let args_json = args.get(2)
+                .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()))
+                .unwrap_or_else(|| "[]".into());
             let result = ctx.plugin_call(&plugin_id, &method, &args_json).await.map_err(|e| e.to_string())?;
             Ok(serde_json::from_str(&result).unwrap_or(serde_json::Value::Null))
         }
