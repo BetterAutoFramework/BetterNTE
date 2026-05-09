@@ -367,7 +367,7 @@ impl Engine {
     }
 
     /// Speed test all capture methods in the whitelist, return the fastest one.
-    /// Mirrors MaaFramework's approach: warmup + timed capture for each method.
+    /// Concurrently probes all whitelist methods, then picks the fastest.
     async fn speed_test_capture_engine(
         capture_config: &betternte_core::config::CaptureConfig,
         target: &betternte_capture::CaptureTarget,
@@ -394,80 +394,116 @@ impl Engine {
             anyhow::bail!("No capture methods in whitelist");
         }
 
-        let mut best_engine: Option<Box<dyn betternte_capture::ScreenCapture>> = None;
-        let mut best_method = CaptureMethod::Auto;
+        // Concurrently probe all methods.
+        // Each probe: create engine → start → warmup → timed capture → stop.
+        // Return (method, latency) for successful probes.
+        let target_clone = target.clone();
+        let runtime_opts_clone = runtime_opts.clone();
+        let fps_cap = capture_config.fps_cap;
+        let whitelist_clone = whitelist.clone();
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for method in ordered_methods {
+            let target = target_clone.clone();
+            let runtime_opts = runtime_opts_clone.clone();
+            let whitelist = whitelist_clone.clone();
+            join_set.spawn(async move {
+                let result = Self::probe_capture_method(
+                    &method,
+                    &whitelist,
+                    fps_cap,
+                    &target,
+                    &runtime_opts,
+                )
+                .await;
+                (method, result)
+            });
+        }
+
+        // Find the fastest successful probe.
+        let mut best_method: Option<CaptureMethod> = None;
         let mut best_latency = std::time::Duration::from_secs(u64::MAX);
 
-        for method in &ordered_methods {
-            let engine = match betternte_capture::factory::create_capture_engine_with_fps_for_target(
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok((method, Ok(latency))) => {
+                    info!(
+                        ?method,
+                        latency_ms = latency.as_secs_f64() * 1000.0,
+                        "Speed test probe: OK"
+                    );
+                    if latency < best_latency {
+                        best_latency = latency;
+                        best_method = Some(method);
+                    }
+                }
+                Ok((method, Err(e))) => {
+                    warn!(?method, error = %e, "Speed test probe: failed");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Speed test probe: task panicked");
+                }
+            }
+        }
+
+        let best_method = best_method
+            .ok_or_else(|| anyhow::anyhow!("All capture methods failed during speed test"))?;
+
+        info!(
+            ?best_method,
+            latency_ms = best_latency.as_secs_f64() * 1000.0,
+            "Speed test: selected best engine"
+        );
+
+        // Create the winning engine for real use.
+        let mut engine = betternte_capture::factory::create_capture_engine_with_fps_for_target(
+            &best_method,
+            whitelist,
+            capture_config.fps_cap,
+            Some(target),
+        )?;
+        engine.configure(runtime_opts.clone());
+        engine.start(target).await?;
+
+        Ok((engine, best_method))
+    }
+
+    /// Probe a single capture method: create → start → warmup → timed capture → stop.
+    /// Returns the measured latency on success.
+    async fn probe_capture_method(
+        method: &CaptureMethod,
+        whitelist: &[CaptureMethod],
+        fps_cap: u32,
+        target: &betternte_capture::CaptureTarget,
+        runtime_opts: &betternte_core::CaptureRuntimeOptions,
+    ) -> anyhow::Result<std::time::Duration> {
+        let mut engine =
+            betternte_capture::factory::create_capture_engine_with_fps_for_target(
                 method,
                 whitelist,
-                capture_config.fps_cap,
+                fps_cap,
                 Some(target),
-            ) {
-                Ok(e) => e,
-                Err(e) => {
-                    warn!(method = ?method, error = %e, "Speed test: failed to create");
-                    continue;
-                }
-            };
+            )?;
+        engine.configure(runtime_opts.clone());
+        engine.start(target).await?;
 
-            let _engine_name = engine.name().to_string();
-            let mut engine = engine;
-            engine.configure(runtime_opts.clone());
+        // Warmup (first frame may be slow due to D3D11 init)
+        let _ = engine.capture().await;
 
-            // Start
-            if let Err(e) = engine.start(target).await {
-                warn!(method = ?method, error = %e, "Speed test: failed to start");
-                continue;
-            }
+        // Timed capture
+        let t0 = std::time::Instant::now();
+        let frame = engine.capture().await?;
+        let latency = t0.elapsed();
 
-            // Warmup (first frame may be slow due to D3D11 init)
-            let _ = engine.capture().await;
+        info!(
+            ?method,
+            latency_ms = latency.as_secs_f64() * 1000.0,
+            size = format!("{}x{}", frame.width, frame.height),
+            "Speed test probe: captured"
+        );
 
-            // Timed capture
-            let t0 = std::time::Instant::now();
-            let frame = match engine.capture().await {
-                Ok(f) => f,
-                Err(e) => {
-                    warn!(method = ?method, error = %e, "Speed test: capture failed");
-                    let _ = engine.stop().await;
-                    continue;
-                }
-            };
-            let latency = t0.elapsed();
-
-            info!(
-                method = ?method,
-                latency_ms = latency.as_secs_f64() * 1000.0,
-                size = format!("{}x{}", frame.width, frame.height),
-                "Speed test: OK"
-            );
-
-            if latency < best_latency {
-                // Stop previous best
-                if let Some(mut prev) = best_engine.take() {
-                    let _ = prev.stop().await;
-                }
-                best_latency = latency;
-                best_method = method.clone();
-                best_engine = Some(engine);
-            } else {
-                let _ = engine.stop().await;
-            }
-        }
-
-        match best_engine {
-            Some(engine) => {
-                info!(
-                    method = ?best_method,
-                    latency_ms = best_latency.as_secs_f64() * 1000.0,
-                    "Speed test: selected best engine"
-                );
-                Ok((engine, best_method))
-            }
-            None => anyhow::bail!("All capture methods failed during speed test"),
-        }
+        let _ = engine.stop().await;
+        Ok(latency)
     }
 
     fn build_capture_runtime_options(
