@@ -76,6 +76,9 @@ adb_client = "3.2"
 # JS 引擎
 rquickjs = { version = "0.11", features = ["full-async", "parallel"] }
 
+# WASM 引擎
+wasmtime = { version = "29", default-features = false, features = ["cranelift"] }
+
 # HTTP 服务器
 axum = "0.8"
 tower = "0.5"

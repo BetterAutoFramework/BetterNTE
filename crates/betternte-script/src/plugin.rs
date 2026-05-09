@@ -2,7 +2,7 @@
 //!
 //! Supports three plugin types:
 //! - **JS**: Runs in an isolated QuickJS runtime
-//! - **WASM**: WebAssembly plugins (stub, TODO)
+//! - **WASM**: WebAssembly plugins via wasmtime
 //! - **FFI**: Native dynamic library plugins (stub, TODO)
 //!
 //! Plugins are discovered from `data/plugins/{plugin-id}/` directories.
@@ -220,22 +220,144 @@ impl Plugin for JsPlugin {
     }
 }
 
-// ━━━ WASM Plugin (stub) ━━━
+// ━━━ WASM Plugin ━━━
 
-/// WASM plugin — loads a WebAssembly module.
+/// WASM plugin — loads a WebAssembly module via wasmtime.
 ///
-/// **Status**: Stub implementation. TODO: implement with wasmtime.
+/// The WASM module must export:
+/// - `memory` — standard WASM linear memory
+/// - `__alloc(size: i32) -> i32` — allocate bytes in linear memory
+/// - `__plugin_info() -> i64` — return plugin info JSON (ptr<<32 | len)
+/// - `__plugin_call(name_ptr, name_len, args_ptr, args_len) -> i64` — call a method
+///
+/// All strings are UTF-8 encoded in WASM linear memory.
+/// Args and return values are JSON strings.
 pub struct WasmPlugin {
     manifest: PluginManifest,
+    engine: wasmtime::Engine,
+    module: wasmtime::Module,
+    methods: Vec<String>,
 }
 
 impl WasmPlugin {
-    pub fn new(manifest: PluginManifest, _entry_path: &Path) -> Result<Self> {
-        tracing::warn!(
-            "WASM plugin '{}' loaded but not yet implemented (stub)",
-            manifest.name
+    pub fn new(manifest: PluginManifest, entry_path: &Path) -> Result<Self> {
+        let wasm_bytes = std::fs::read(entry_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to read WASM entry '{}': {}",
+                entry_path.display(),
+                e
+            )
+        })?;
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &wasm_bytes)?;
+
+        // Instantiate temporarily to read plugin info
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = wasmtime::Linker::new(&engine).instantiate(&mut store, &module)?;
+
+        // Get exported memory
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .ok_or_else(|| anyhow::anyhow!("WASM module must export 'memory'"))?;
+
+        // Call __plugin_info to discover available methods
+        let info_func = instance.get_typed_func::<(), i64>(&mut store, "__plugin_info")?;
+        let info_result = info_func.call(&mut store, ())?;
+
+        let ptr = (info_result >> 32) as i32 as usize;
+        let len = (info_result & 0xFFFF_FFFF) as i32 as usize;
+
+        let mem_data = memory.data(&store);
+        if ptr + len > mem_data.len() {
+            return Err(anyhow::anyhow!(
+                "__plugin_info returned out-of-bounds pointer: ptr={} len={} mem_size={}",
+                ptr,
+                len,
+                mem_data.len()
+            ));
+        }
+        let info_str = std::str::from_utf8(&mem_data[ptr..ptr + len])?;
+
+        #[derive(Deserialize)]
+        struct WasmPluginInfo {
+            #[serde(default)]
+            methods: Vec<String>,
+        }
+
+        let wasm_info: WasmPluginInfo = serde_json::from_str(info_str)?;
+
+        tracing::info!(
+            "WASM plugin '{}' loaded with methods: {:?}",
+            manifest.name,
+            wasm_info.methods
         );
-        Ok(Self { manifest })
+
+        Ok(Self {
+            manifest,
+            engine,
+            module,
+            methods: wasm_info.methods,
+        })
+    }
+
+    /// Execute a single WASM call in a fresh Store/Instance.
+    ///
+    /// Creates a new Store per call so WasmPlugin can be Send + Sync
+    /// (wasmtime::Store is not Send by default).
+    fn call_wasm(&self, method: &str, args: Vec<serde_json::Value>) -> Result<serde_json::Value> {
+        let mut store = wasmtime::Store::new(&self.engine, ());
+        let instance = wasmtime::Linker::new(&self.engine).instantiate(&mut store, &self.module)?;
+
+        let memory = instance
+            .get_memory(&mut store, "memory")
+            .ok_or_else(|| anyhow::anyhow!("WASM module must export 'memory'"))?;
+
+        let alloc = instance.get_typed_func::<i32, i32>(&mut store, "__alloc")?;
+
+        // Write method name into WASM linear memory
+        let method_bytes = method.as_bytes();
+        let method_ptr = alloc.call(&mut store, method_bytes.len() as i32)? as usize;
+        memory.data_mut(&mut store)[method_ptr..method_ptr + method_bytes.len()]
+            .copy_from_slice(method_bytes);
+
+        // Serialize and write args JSON into WASM linear memory
+        let args_json = serde_json::to_string(&args)?;
+        let args_bytes = args_json.as_bytes();
+        let args_ptr = alloc.call(&mut store, args_bytes.len() as i32)? as usize;
+        memory.data_mut(&mut store)[args_ptr..args_ptr + args_bytes.len()]
+            .copy_from_slice(args_bytes);
+
+        // Call __plugin_call
+        let call_func =
+            instance.get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "__plugin_call")?;
+        let result = call_func.call(
+            &mut store,
+            (
+                method_ptr as i32,
+                method_bytes.len() as i32,
+                args_ptr as i32,
+                args_bytes.len() as i32,
+            ),
+        )?;
+
+        // Read result from WASM linear memory
+        let result_ptr = (result >> 32) as i32 as usize;
+        let result_len = (result & 0xFFFF_FFFF) as i32 as usize;
+
+        let mem_data = memory.data(&store);
+        if result_ptr + result_len > mem_data.len() {
+            return Err(anyhow::anyhow!(
+                "__plugin_call returned out-of-bounds pointer: ptr={} len={} mem_size={}",
+                result_ptr,
+                result_len,
+                mem_data.len()
+            ));
+        }
+        let result_str = std::str::from_utf8(&mem_data[result_ptr..result_ptr + result_len])?;
+
+        serde_json::from_str(result_str)
+            .map_err(|e| anyhow::anyhow!("Failed to parse WASM result as JSON: {}", e))
     }
 }
 
@@ -247,16 +369,20 @@ impl Plugin for WasmPlugin {
             version: self.manifest.version.clone(),
             description: self.manifest.description.clone(),
             plugin_type: "wasm".to_string(),
-            methods: vec![],
+            methods: self.methods.clone(),
         }
     }
 
-    fn call(&self, method: &str, _args: Vec<serde_json::Value>) -> Result<serde_json::Value> {
-        Err(anyhow::anyhow!(
-            "WASM plugin '{}' method '{}' not yet implemented",
-            self.manifest.id,
-            method
-        ))
+    fn call(&self, method: &str, args: Vec<serde_json::Value>) -> Result<serde_json::Value> {
+        if !self.methods.contains(&method.to_string()) {
+            return Err(anyhow::anyhow!(
+                "Method '{}' not found in WASM plugin '{}'. Available: {:?}",
+                method,
+                self.manifest.id,
+                self.methods
+            ));
+        }
+        self.call_wasm(method, args)
     }
 }
 
