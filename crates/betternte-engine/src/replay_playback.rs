@@ -168,6 +168,7 @@ pub(crate) fn decode_png_into_core_frame(
             "replay:{}",
             path.file_name().and_then(|s| s.to_str()).unwrap_or("png")
         ),
+        recycle_fn: None,
     })
 }
 

@@ -73,6 +73,8 @@ pub struct DxgiDupCapture {
     staging_texture: Arc<Mutex<Option<ID3D11Texture2D>>>,
     state: Arc<Mutex<DxgiDupState>>,
     window_region: Arc<Mutex<WindowRegion>>,
+    /// Reusable pixel buffer to avoid allocation per frame.
+    pixel_buffer: Arc<Mutex<Vec<u8>>>,
 }
 
 impl DxgiDupCapture {
@@ -107,6 +109,7 @@ impl DxgiDupCapture {
                 height: 0,
                 monitor: 0,
             })),
+            pixel_buffer: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -494,7 +497,18 @@ impl DxgiDupCapture {
             }
         };
 
-        let mut pixels = Vec::with_capacity(crop_width * crop_height * 4);
+        // Acquire reusable pixel buffer from pool (avoids allocation).
+        let pixel_len = crop_width * crop_height * 4;
+        let mut pixels = {
+            let mut guard = self.pixel_buffer.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.capacity() >= pixel_len {
+                // Reuse: clear length but keep capacity.
+                guard.clear();
+                std::mem::replace(&mut *guard, Vec::new())
+            } else {
+                Vec::with_capacity(pixel_len)
+            }
+        };
         if left == 0 && crop_width * 4 == row_pitch {
             let start_ptr = unsafe { src_data_ptr.add(top * row_pitch) };
             let total = crop_height * row_pitch;
@@ -512,12 +526,21 @@ impl DxgiDupCapture {
             context.Unmap(&staging, 0);
         }
 
-        let frame = CaptureFrame::new(
+        // Create frame with recycle callback to return buffer to pool.
+        let pixel_buffer_ref = self.pixel_buffer.clone();
+        let frame = CaptureFrame::new_with_recycle(
             crop_width as u32,
             crop_height as u32,
             pixels,
             betternte_core::PixelFormat::Bgra,
             "DxgiDesktopDuplication".to_string(),
+            move |buf: Vec<u8>| {
+                if let Ok(mut guard) = pixel_buffer_ref.lock() {
+                    if guard.capacity() == 0 {
+                        *guard = buf;
+                    }
+                }
+            },
         );
 
         {

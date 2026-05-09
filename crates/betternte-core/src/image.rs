@@ -34,7 +34,17 @@ impl PixelFormat {
 /// 截图帧数据。
 ///
 /// 一帧完整的截图数据，包含像素数据、尺寸、格式和时间戳。
-#[derive(Debug, Clone)]
+///
+/// # Buffer recycling
+///
+/// When constructed via [`CaptureFrame::new_with_recycle`], the frame carries
+/// a `recycle_fn` callback.  On drop, the callback is invoked with the pixel
+/// `data` Vec, returning it to the caller's pool.  This eliminates per-frame
+/// heap allocation in the hot capture loop (especially at 1080p where each
+/// frame is ~8 MiB).
+///
+/// `Clone` intentionally does **not** copy the recycle callback — only the
+/// original frame returns its buffer to the pool; clones allocate normally.
 pub struct CaptureFrame {
     /// 宽度（像素）
     pub width: u32,
@@ -50,10 +60,54 @@ pub struct CaptureFrame {
     pub sequence: u64,
     /// 来源引擎名称
     pub source: String,
+    /// Optional callback invoked on drop to return `data` to a buffer pool.
+    recycle_fn: Option<Box<dyn FnOnce(Vec<u8>) + Send>>,
+}
+
+impl Clone for CaptureFrame {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            data: self.data.clone(),
+            format: self.format,
+            timestamp: self.timestamp,
+            sequence: self.sequence,
+            source: self.source.clone(),
+            // Clones do NOT carry the recycle callback — only the original
+            // returns its buffer to the pool.  The clone's buffer is freed
+            // normally on drop.
+            recycle_fn: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for CaptureFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureFrame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("data_len", &self.data.len())
+            .field("format", &self.format)
+            .field("timestamp", &self.timestamp)
+            .field("sequence", &self.sequence)
+            .field("source", &self.source)
+            .field("has_recycle_fn", &self.recycle_fn.is_some())
+            .finish()
+    }
+}
+
+impl Drop for CaptureFrame {
+    fn drop(&mut self) {
+        if let Some(recycle) = self.recycle_fn.take() {
+            let data = std::mem::take(&mut self.data);
+            recycle(data);
+        }
+    }
 }
 
 impl CaptureFrame {
-    /// 创建新帧
+    /// 创建新帧（无 buffer 回收）
     pub fn new(
         width: u32,
         height: u32,
@@ -69,6 +123,33 @@ impl CaptureFrame {
             timestamp: Utc::now(),
             sequence: 0,
             source,
+            recycle_fn: None,
+        }
+    }
+
+    /// 创建带 buffer 回收回调的帧。
+    ///
+    /// 当帧被 drop 时，`recycle_fn` 会被调用，将 `data` Vec 归还到调用者的
+    /// buffer pool 中。这避免了热路径上每帧 ~8 MiB 的堆分配。
+    ///
+    /// `Clone` 不会复制回调——只有原始帧会归还 buffer，clone 的帧正常释放。
+    pub fn new_with_recycle(
+        width: u32,
+        height: u32,
+        data: Vec<u8>,
+        format: PixelFormat,
+        source: String,
+        recycle_fn: impl FnOnce(Vec<u8>) + Send + 'static,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            data,
+            format,
+            timestamp: Utc::now(),
+            sequence: 0,
+            source,
+            recycle_fn: Some(Box::new(recycle_fn)),
         }
     }
 
@@ -116,6 +197,7 @@ impl CaptureFrame {
             timestamp: self.timestamp,
             sequence: self.sequence,
             source: self.source.clone(),
+            recycle_fn: None,
         })
     }
 
@@ -196,6 +278,7 @@ impl CaptureFrame {
             timestamp: self.timestamp,
             sequence: self.sequence,
             source: self.source.clone(),
+            recycle_fn: None,
         })
     }
 
