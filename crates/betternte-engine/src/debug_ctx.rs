@@ -1332,6 +1332,14 @@ impl ScriptContext for DebugScriptContext {
         }
         result
     }
+
+    fn plugin_config(&self, plugin_id: &str) -> Option<serde_json::Value> {
+        self.inner.plugin_config(plugin_id)
+    }
+
+    fn plugin_enabled(&self, plugin_id: &str) -> bool {
+        self.inner.plugin_enabled(plugin_id)
+    }
 }
 
 #[cfg(test)]

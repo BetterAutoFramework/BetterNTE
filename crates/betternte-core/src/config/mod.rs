@@ -39,6 +39,9 @@ pub struct EngineConfig {
     pub replay: ReplayConfig,
     #[serde(default)]
     pub security: SecurityConfig,
+    /// Plugin states keyed by plugin ID (enable/disable + user config).
+    #[serde(default)]
+    pub plugins: HashMap<String, PluginState>,
 }
 
 impl Default for EngineConfig {
@@ -58,6 +61,7 @@ impl Default for EngineConfig {
             advanced: AdvancedConfig::default(),
             replay: ReplayConfig::default(),
             security: SecurityConfig::default(),
+            plugins: HashMap::new(),
         }
     }
 }
@@ -891,6 +895,30 @@ impl Default for TriggerState {
         Self {
             enabled: false,
             params: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+}
+
+/// Per-plugin state stored in config file.
+///
+/// Tracks whether a discovered plugin is enabled and holds user-configured
+/// parameters that the plugin can read via `ctx.getConfig()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginState {
+    /// Whether this plugin is enabled (loaded on startup).
+    /// Defaults to `false` so newly discovered plugins require explicit opt-in.
+    #[serde(default)]
+    pub enabled: bool,
+    /// User-configured parameters for this plugin (schema defined by `config_schema` in manifest).
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
+impl Default for PluginState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            config: serde_json::Value::Object(serde_json::Map::new()),
         }
     }
 }

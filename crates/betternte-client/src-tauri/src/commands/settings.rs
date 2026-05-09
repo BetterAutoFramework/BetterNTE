@@ -291,3 +291,90 @@ pub fn better_nte_debug_enabled() -> bool {
         .map(|v| v.trim() == "1")
         .unwrap_or(false)
 }
+
+/// List all plugins (loaded + discovered but not loaded).
+/// Returns a Vec<PluginInfo> as JSON.
+#[tauri::command]
+pub async fn list_plugins(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read_engine("listing plugins").await?;
+    let engine = guard.as_ref().ok_or("Engine not initialized")?;
+
+    let ctx = engine
+        .script_ctx_handle()
+        .ok_or("ScriptContext not initialized")?;
+
+    let registry = ctx.plugin_registry_handle();
+    let registry_guard = registry.read().await;
+    let list = registry_guard.list_all();
+
+    serde_json::to_value(&list).map_err(|e| format!("Serialize error: {}", e))
+}
+
+/// Enable or disable a plugin.
+///
+/// Updates EngineConfig.plugins[id].enabled, saves config, and
+/// loads/unloads the plugin at runtime.
+#[tauri::command]
+pub async fn set_plugin_enabled(
+    plugin_id: String,
+    enabled: bool,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    // 1. Update config
+    let config_path_guard = state.config_path.lock().await;
+    let config_path = config_path_guard.as_ref().ok_or("Config path not set")?;
+
+    let mut config = load_current_config(config_path)?;
+
+    let plugin_state = config.plugins.entry(plugin_id.clone()).or_default();
+    plugin_state.enabled = enabled;
+
+    save_config(config_path, &config)?;
+    drop(config_path_guard);
+
+    // 2. Apply to running engine
+    let mut guard = state.write_engine("setting plugin enabled").await?;
+    if let Some(engine) = guard.as_mut() {
+        // Update engine config
+        engine.set_config(config).await.map_err(|e| format!("Apply config failed: {}", e))?;
+
+        // Load or unload plugin at runtime
+        let ctx = engine
+            .script_ctx_handle()
+            .ok_or("ScriptContext not initialized")?;
+
+        let registry = ctx.plugin_registry_handle();
+        let mut registry_guard = registry.write().await;
+
+        if enabled {
+            let plugin_config = engine
+                .config()
+                .plugins
+                .get(&plugin_id)
+                .map(|s| s.config.clone())
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            if let Err(e) = registry_guard.enable_plugin(&plugin_id, &plugin_config) {
+                tracing::warn!("Failed to enable plugin '{}': {}", plugin_id, e);
+                return Err(format!("Failed to enable plugin: {}", e));
+            }
+        } else {
+            registry_guard.disable_plugin(&plugin_id);
+        }
+    }
+
+    Ok(())
+}
+
+/// Helper: load current config from file.
+fn load_current_config(path: &std::path::Path) -> Result<EngineConfig, String> {
+    use betternte_core::EngineConfig;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("Read config failed: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Parse config failed: {}", e))
+}
+
+use crate::{save_config, AppState};
+use betternte_core::EngineConfig;

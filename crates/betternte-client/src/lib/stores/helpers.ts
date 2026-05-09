@@ -488,6 +488,18 @@ export function mapEngineConfig(raw: Record<string, unknown>): EngineConfig {
     security: {
       mode: String(security.mode ?? "normal") === "strict" ? "strict" : "normal",
     },
+    plugins: Object.fromEntries(
+      Object.entries((raw.plugins as Record<string, unknown>) ?? {}).map(([id, state]) => {
+        const s = (state as Record<string, unknown>) ?? {};
+        return [
+          id,
+          {
+            enabled: Boolean(s.enabled ?? false),
+            config: (s.config as Record<string, unknown>) ?? {},
+          },
+        ];
+      })
+    ),
   };
 }
 
@@ -556,5 +568,6 @@ export function mapConfigToRust(config: EngineConfig): Record<string, unknown> {
       frame_sample_interval: config.replay.frame_sample_interval,
     },
     security: config.security,
+    plugins: config.plugins,
   };
 }

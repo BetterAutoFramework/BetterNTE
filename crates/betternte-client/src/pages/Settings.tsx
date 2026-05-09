@@ -13,6 +13,7 @@ import {
   Layers,
   Loader2,
   Plus,
+  Puzzle,
   Settings2,
   Shield,
   Trash2,
@@ -33,6 +34,7 @@ import { invokeAction } from "@/lib/stores/helpers";
 import type {
   EngineConfig,
   HotkeyTriggersConfig,
+  PluginInfo,
   Subscription,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -44,6 +46,7 @@ type SettingsTab =
   | "overlay"
   | "notifications"
   | "scripts"
+  | "plugins"
   | "security"
   | "advanced";
 
@@ -54,6 +57,7 @@ const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "overlay", label: "叠层", icon: <Layers className="w-4 h-4" /> },
   { id: "notifications", label: "通知", icon: <Bell className="w-4 h-4" /> },
   { id: "scripts", label: "脚本", icon: <Code className="w-4 h-4" /> },
+  { id: "plugins", label: "插件", icon: <Puzzle className="w-4 h-4" /> },
   { id: "security", label: "安全", icon: <Shield className="w-4 h-4" /> },
   {
     id: "advanced",
@@ -958,6 +962,95 @@ function SubscriptionManager({
   );
 }
 
+function PluginSettings({ config, onChange }: { config: EngineConfig; onChange: (section: string, field: string, value: unknown) => void }) {
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    invokeAction<PluginInfo[]>("list_plugins")
+      .then((list) => setPlugins(list ?? []))
+      .catch(() => setPlugins([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleToggle = useCallback(
+    async (pluginId: string, enabled: boolean) => {
+      // Update config
+      const updated = { ...config.plugins, [pluginId]: { ...config.plugins[pluginId], enabled } };
+      onChange("plugins", pluginId, updated[pluginId]);
+      // Notify engine
+      await invokeAction("set_plugin_enabled", { pluginId, enabled }).catch(() => {});
+      // Refresh list
+      invokeAction<PluginInfo[]>("list_plugins").then((list) => setPlugins(list ?? [])).catch(() => {});
+    },
+    [config.plugins, onChange]
+  );
+
+  const handleConfigChange = useCallback(
+    (pluginId: string, key: string, value: unknown) => {
+      const prev = config.plugins[pluginId]?.config ?? {};
+      const updated = { ...config.plugins, [pluginId]: { ...config.plugins[pluginId], config: { ...prev, [key]: value } } };
+      onChange("plugins", pluginId, updated[pluginId]);
+    },
+    [config.plugins, onChange]
+  );
+
+  if (loading) {
+    return <div className="text-sm text-foreground-tertiary">加载插件列表...</div>;
+  }
+
+  if (plugins.length === 0) {
+    return (
+      <CardExpander icon={<Puzzle className="w-4 h-4" />} title="插件管理" description="暂未发现插件。将插件放入 data/plugins/ 目录即可。">
+        <div className="text-sm text-foreground-tertiary py-4 text-center">data/plugins/ 目录下暂无插件</div>
+      </CardExpander>
+    );
+  }
+
+  return (
+    <CardExpander icon={<Puzzle className="w-4 h-4" />} title="插件管理" description="管理已发现的插件，启用/禁用和配置参数">
+      {plugins.map((plugin) => {
+        const state = config.plugins[plugin.id];
+        const isEnabled = state?.enabled ?? false;
+        const pluginConfig = state?.config ?? {};
+        return (
+          <div key={plugin.id} className="border border-border-subtle rounded-lg p-3 mb-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-foreground">
+                  {plugin.name}
+                  <span className="ml-2 text-xs text-foreground-tertiary">v{plugin.version}</span>
+                  <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-surface/80 text-foreground-secondary">{plugin.plugin_type}</span>
+                </div>
+                {plugin.description && <div className="text-xs text-foreground-tertiary mt-1">{plugin.description}</div>}
+                {plugin.methods.length > 0 && <div className="text-xs text-foreground-tertiary mt-1">方法: {plugin.methods.join(", ")}</div>}
+              </div>
+              <Toggle checked={isEnabled} onChange={(v) => handleToggle(plugin.id, v)} />
+            </div>
+            {isEnabled && plugin.config_schema && (
+              <div className="mt-3 pt-3 border-t border-border-subtle">
+                <div className="text-xs text-foreground-secondary mb-2">插件配置</div>
+                {Object.entries(plugin.config_schema as Record<string, { type?: string; description?: string; default?: unknown }>).map(([key, schema]) => (
+                  <SettingRow key={key} label={key} description={schema.description}>
+                    {schema.type === "boolean" ? (
+                      <Toggle checked={!!pluginConfig[key]} onChange={(v) => handleConfigChange(plugin.id, key, v)} />
+                    ) : schema.type === "number" ? (
+                      <input type="number" value={(pluginConfig[key] as number) ?? schema.default ?? 0} onChange={(e) => handleConfigChange(plugin.id, key, Number(e.target.value))} className="w-24 bg-surface border border-border-subtle rounded px-2 py-1 text-sm text-foreground" />
+                    ) : (
+                      <input type="text" value={(pluginConfig[key] as string) ?? schema.default ?? ""} onChange={(e) => handleConfigChange(plugin.id, key, e.target.value)} className="w-48 bg-surface border border-border-subtle rounded px-2 py-1 text-sm text-foreground" />
+                    )}
+                  </SettingRow>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </CardExpander>
+  );
+}
+
 function ScriptSettings({
   config,
   onChange,
@@ -1615,6 +1708,7 @@ export function Settings() {
     overlay: <OverlaySettings {...sectionProps} />,
     notifications: <NotificationSettings {...sectionProps} />,
     scripts: <ScriptSettings {...sectionProps} />,
+    plugins: <PluginSettings config={draft} onChange={handleChange} />,
     security: <SecuritySettings {...sectionProps} />,
     advanced: (
       <AdvancedSettings

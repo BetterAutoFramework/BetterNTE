@@ -28,6 +28,15 @@ pub struct PluginManifest {
     #[serde(rename = "type")]
     pub plugin_type: PluginType,
     pub entry: String,
+    /// Optional JSON schema describing the plugin's configuration parameters.
+    /// Used by the frontend to render a config form when the plugin is enabled.
+    #[serde(default)]
+    pub config_schema: Option<serde_json::Value>,
+    /// Event hook declarations: event name → JS method name.
+    ///
+    /// Example: `{ "on_step_end": "handleStepEnd" }`
+    #[serde(default)]
+    pub hooks: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +59,12 @@ pub struct PluginInfo {
     #[serde(rename = "type")]
     pub plugin_type: String,
     pub methods: Vec<String>,
+    /// Optional JSON schema for plugin configuration (from manifest).
+    #[serde(default)]
+    pub config_schema: Option<serde_json::Value>,
+    /// Whether this plugin is currently enabled and loaded.
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 // ━━━ Plugin trait ━━━
@@ -67,6 +82,61 @@ pub trait Plugin: Send + Sync {
     /// `args` is a `Vec<Value>` where each element is one positional argument.
     /// Returns a JSON `Value` result.
     fn call(&self, method: &str, args: Vec<serde_json::Value>) -> Result<serde_json::Value>;
+
+    /// Check if this plugin has a hook registered for the given event.
+    fn has_hook(&self, event: &str) -> bool;
+
+    /// Get the method name registered for a given event hook, if any.
+    fn hook_method(&self, event: &str) -> Option<&str>;
+}
+
+// ━━━ Plugin Storage ━━━
+
+/// Simple file-based key-value storage for a single plugin.
+///
+/// Data is persisted as JSON at `data/plugins/{id}/storage.json`.
+/// Each plugin gets its own isolated storage namespace.
+pub struct PluginStorage {
+    path: PathBuf,
+    data: serde_json::Map<String, serde_json::Value>,
+}
+
+impl PluginStorage {
+    /// Open or create plugin storage at the given path.
+    pub fn new(path: PathBuf) -> Self {
+        let data = if path.exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&s).ok())
+                .unwrap_or_default()
+        } else {
+            serde_json::Map::new()
+        };
+        Self { path, data }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        self.data.get(key)
+    }
+
+    pub fn set(&mut self, key: String, value: serde_json::Value) {
+        self.data.insert(key, value);
+        self.save();
+    }
+
+    pub fn delete(&mut self, key: &str) {
+        self.data.remove(key);
+        self.save();
+    }
+
+    fn save(&self) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&self.data) {
+            let _ = std::fs::write(&self.path, json);
+        }
+    }
 }
 
 // ━━━ JS Plugin ━━━
@@ -83,6 +153,8 @@ pub trait Plugin: Send + Sync {
 pub struct JsPlugin {
     manifest: PluginManifest,
     methods: Vec<String>,
+    /// Plugin configuration value (from EngineConfig.plugins[id].config).
+    config: serde_json::Value,
     /// The isolated QuickJS runtime + context, wrapped in a Mutex for thread safety.
     /// Each `call()` locks the mutex, enters the context, invokes the method, and returns.
     inner: Mutex<JsPluginInner>,
@@ -91,10 +163,12 @@ pub struct JsPlugin {
 struct JsPluginInner {
     runtime: rquickjs::Runtime,
     context: rquickjs::Context,
+    /// Per-plugin persistent storage (shared with JS host function closures).
+    storage: Arc<Mutex<PluginStorage>>,
 }
 
 impl JsPlugin {
-    pub fn new(manifest: PluginManifest, entry_path: &Path) -> Result<Self> {
+    pub fn new(manifest: PluginManifest, entry_path: &Path, config: serde_json::Value, storage_path: PathBuf) -> Result<Self> {
         use rquickjs::{Context, Runtime};
 
         let source = std::fs::read_to_string(entry_path).map_err(|e| {
@@ -110,6 +184,7 @@ impl JsPlugin {
         rt.set_memory_limit(64 * 1024 * 1024); // 64 MB memory limit
 
         let ctx = Context::full(&rt)?;
+        let storage = Arc::new(Mutex::new(PluginStorage::new(storage_path)));
 
         // Evaluate the plugin source and extract exported methods
         let methods = {
@@ -123,6 +198,9 @@ impl JsPlugin {
                 var exports = module.exports;
                 "#,
             )?;
+
+            // Inject the plugin ctx object with limited API
+            Self::inject_plugin_ctx(&js_ctx, &manifest.id, &config, &storage)?;
 
             // Evaluate the plugin source code
             js_ctx.eval::<(), _>(&source)?;
@@ -151,11 +229,107 @@ impl JsPlugin {
         Ok(Self {
             manifest,
             methods,
+            config,
             inner: Mutex::new(JsPluginInner {
                 runtime: rt,
                 context: ctx,
+                storage,
             }),
         })
+    }
+
+    /// Inject a `ctx` object into the JS runtime with limited plugin API.
+    ///
+    /// Available methods:
+    /// - `ctx.log(msg)`, `ctx.logInfo(msg)`, `ctx.logWarn(msg)`, `ctx.logError(msg)`
+    /// - `ctx.getConfig()` — returns the plugin's config JSON
+    /// - `ctx.storage.get(key)`, `ctx.storage.set(key, value)`, `ctx.storage.delete(key)`
+    /// - `ctx.call(method, ...args)` — call another method on the same plugin
+    fn inject_plugin_ctx(
+        js_ctx: &rquickjs::Ctx<'_>,
+        plugin_id: &str,
+        config: &serde_json::Value,
+        storage: &Arc<Mutex<PluginStorage>>,
+    ) -> Result<()> {
+        let config_json = serde_json::to_string(config).unwrap_or_else(|_| "{}".into());
+
+        // Register host functions for logging
+        let plugin_id_log = plugin_id.to_string();
+        js_ctx.globals().set(
+            "__plugin_log",
+            rquickjs::function::Func::from(move |level: String, msg: String| {
+                let prefix = format!("[plugin:{}]", plugin_id_log);
+                match level.as_str() {
+                    "warn" => tracing::warn!("{} {}", prefix, msg),
+                    "error" => tracing::error!("{} {}", prefix, msg),
+                    _ => tracing::info!("{} {}", prefix, msg),
+                }
+            }),
+        )?;
+
+        // Register storage host functions using the shared Arc<Mutex<PluginStorage>>
+        let storage_ref = storage.clone();
+        js_ctx.globals().set(
+            "__plugin_storage_get",
+            rquickjs::function::Func::from(move |key: String| -> Option<String> {
+                let s = storage_ref.lock().unwrap();
+                s.get(&key).map(|v| serde_json::to_string(v).unwrap_or_default())
+            }),
+        )?;
+
+        let storage_ref = storage.clone();
+        js_ctx.globals().set(
+            "__plugin_storage_set",
+            rquickjs::function::Func::from(move |key: String, value: String| {
+                let mut s = storage_ref.lock().unwrap();
+                let val: serde_json::Value = serde_json::from_str(&value).unwrap_or(serde_json::Value::Null);
+                s.set(key, val);
+            }),
+        )?;
+
+        let storage_ref = storage.clone();
+        js_ctx.globals().set(
+            "__plugin_storage_delete",
+            rquickjs::function::Func::from(move |key: String| {
+                let mut s = storage_ref.lock().unwrap();
+                s.delete(&key);
+            }),
+        )?;
+
+        // Create the ctx object and its methods using JS-level code
+        let ctx_setup = format!(
+            r#"
+            var ctx = {{}};
+            ctx.log = function(msg) {{ __plugin_log("info", String(msg)); }};
+            ctx.logInfo = function(msg) {{ __plugin_log("info", String(msg)); }};
+            ctx.logWarn = function(msg) {{ __plugin_log("warn", String(msg)); }};
+            ctx.logError = function(msg) {{ __plugin_log("error", String(msg)); }};
+            ctx.getConfig = function() {{ return JSON.parse({config_json:?}); }};
+            ctx.storage = {{
+                get: function(key) {{
+                    var raw = __plugin_storage_get(String(key));
+                    return raw === null ? null : JSON.parse(raw);
+                }},
+                set: function(key, value) {{
+                    __plugin_storage_set(String(key), JSON.stringify(value));
+                }},
+                delete: function(key) {{
+                    __plugin_storage_delete(String(key));
+                }}
+            }};
+            ctx.call = function(method) {{
+                var args = [];
+                for (var i = 1; i < arguments.length; i++) args.push(arguments[i]);
+                return module.exports[method].apply(null, args);
+            }};
+            "#,
+            config_json = config_json,
+        );
+
+        // Evaluate the ctx setup code
+        js_ctx.eval::<(), _>(&ctx_setup)?;
+
+        Ok(())
     }
 }
 
@@ -168,6 +342,8 @@ impl Plugin for JsPlugin {
             description: self.manifest.description.clone(),
             plugin_type: "js".to_string(),
             methods: self.methods.clone(),
+            config_schema: self.manifest.config_schema.clone(),
+            enabled: true, // If loaded, it's enabled
         }
     }
 
@@ -218,6 +394,14 @@ impl Plugin for JsPlugin {
         let value: serde_json::Value =
             serde_json::from_str(&result_str).unwrap_or(serde_json::Value::Null);
         Ok(value)
+    }
+
+    fn has_hook(&self, event: &str) -> bool {
+        self.manifest.hooks.contains_key(event)
+    }
+
+    fn hook_method(&self, event: &str) -> Option<&str> {
+        self.manifest.hooks.get(event).map(|s| s.as_str())
     }
 }
 
@@ -382,6 +566,8 @@ impl Plugin for WasmPlugin {
             description: self.manifest.description.clone(),
             plugin_type: "wasm".to_string(),
             methods: self.methods.clone(),
+            config_schema: self.manifest.config_schema.clone(),
+            enabled: true,
         }
     }
 
@@ -395,6 +581,14 @@ impl Plugin for WasmPlugin {
             ));
         }
         self.call_wasm(method, args)
+    }
+
+    fn has_hook(&self, event: &str) -> bool {
+        self.manifest.hooks.contains_key(event)
+    }
+
+    fn hook_method(&self, event: &str) -> Option<&str> {
+        self.manifest.hooks.get(event).map(|s| s.as_str())
     }
 }
 
@@ -511,6 +705,8 @@ impl Plugin for FfiPlugin {
             description: self.manifest.description.clone(),
             plugin_type: "ffi".to_string(),
             methods: self.methods.clone(),
+            config_schema: self.manifest.config_schema.clone(),
+            enabled: true,
         }
     }
 
@@ -594,6 +790,14 @@ impl Plugin for FfiPlugin {
 
         Ok(result)
     }
+
+    fn has_hook(&self, event: &str) -> bool {
+        self.manifest.hooks.contains_key(event)
+    }
+
+    fn hook_method(&self, event: &str) -> Option<&str> {
+        self.manifest.hooks.get(event).map(|s| s.as_str())
+    }
 }
 
 // SAFETY: The Library is kept alive via Arc, and the cached function pointers
@@ -609,22 +813,43 @@ unsafe impl Sync for FfiPlugin {}
 /// Plugins are loaded from `data/plugins/` directories during engine startup.
 /// Each plugin subdirectory must contain a `manifest.json` and the entry file
 /// specified in the manifest.
+///
+/// New plugins are discovered but not loaded by default (enabled: false in config).
+/// The registry tracks both loaded plugins and discovered-but-not-loaded manifests.
 pub struct PluginRegistry {
     plugins: HashMap<String, Box<dyn Plugin>>,
+    /// Manifests of discovered plugins that are NOT currently loaded.
+    /// Used by the frontend to show all available plugins for enable/disable.
+    discovered: Vec<PluginManifest>,
+    /// Base directories for plugin discovery (needed for enable_plugin).
+    data_roots: Vec<PathBuf>,
 }
 
 impl PluginRegistry {
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
+            discovered: Vec::new(),
+            data_roots: Vec::new(),
         }
     }
 
-    /// Scan data root directories for plugins, loading all that are found.
+    /// Scan data root directories for plugins.
     ///
-    /// Looks for `plugins/{plugin-id}/manifest.json` in each data root.
-    /// Later roots can override earlier ones (same plugin id).
-    pub fn load_from_dirs(&mut self, data_roots: &[PathBuf]) -> Result<()> {
+    /// Only loads plugins whose ID is present in `plugin_states` with `enabled: true`.
+    /// All discovered plugin manifests are tracked (for listing), but only enabled
+    /// ones are instantiated.
+    ///
+    /// `plugin_states` comes from `EngineConfig.plugins` and controls which plugins
+    /// are loaded. New plugins default to disabled.
+    pub fn load_from_dirs(
+        &mut self,
+        data_roots: &[PathBuf],
+        plugin_states: &HashMap<String, PluginState>,
+    ) -> Result<()> {
+        self.data_roots = data_roots.to_vec();
+        self.discovered.clear();
+
         for root in data_roots {
             let plugins_dir = root.join("plugins");
             if !plugins_dir.is_dir() {
@@ -656,18 +881,54 @@ impl PluginRegistry {
                     continue;
                 }
 
-                match self.load_plugin(&entry.path()) {
-                    Ok(info) => {
-                        tracing::info!(
-                            "Loaded plugin: {} v{} ({})",
-                            info.name,
-                            info.version,
-                            info.id
-                        );
+                // Read and parse the manifest first (for discovery)
+                let manifest: PluginManifest = match std::fs::read_to_string(&manifest_path)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                {
+                    Some(m) => m,
+                    None => {
+                        tracing::warn!("Failed to parse manifest at {:?}", manifest_path);
+                        continue;
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to load plugin at {:?}: {}", entry.path(), e);
+                };
+
+                let id = manifest.id.clone();
+                let is_enabled = plugin_states.get(&id).map_or(false, |s| s.enabled);
+                let plugin_config = plugin_states
+                    .get(&id)
+                    .map(|s| s.config.clone())
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+                if is_enabled {
+                    // Load the plugin (instantiate runtime)
+                    let storage_path = root.join("plugins").join(&id).join("storage.json");
+                    match self.load_plugin_from_dir(&entry.path(), &plugin_config, storage_path) {
+                        Ok(info) => {
+                            tracing::info!(
+                                "Loaded plugin: {} v{} ({})",
+                                info.name,
+                                info.version,
+                                info.id
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to load plugin at {:?}: {}",
+                                entry.path(),
+                                e
+                            );
+                            // Still track as discovered even if loading failed
+                            self.discovered.push(manifest);
+                        }
                     }
+                } else {
+                    // Not enabled — track as discovered but don't load
+                    tracing::debug!(
+                        "Plugin '{}' discovered but not enabled (disabled in config)",
+                        id
+                    );
+                    self.discovered.push(manifest);
                 }
             }
         }
@@ -675,7 +936,12 @@ impl PluginRegistry {
     }
 
     /// Load a single plugin from a directory containing manifest.json.
-    fn load_plugin(&mut self, dir: &Path) -> Result<PluginInfo> {
+    fn load_plugin_from_dir(
+        &mut self,
+        dir: &Path,
+        config: &serde_json::Value,
+        storage_path: PathBuf,
+    ) -> Result<PluginInfo> {
         let manifest_path = dir.join("manifest.json");
         let manifest_str = std::fs::read_to_string(&manifest_path)?;
         let manifest: PluginManifest = serde_json::from_str(&manifest_str)?;
@@ -689,7 +955,12 @@ impl PluginRegistry {
         }
 
         let plugin: Box<dyn Plugin> = match manifest.plugin_type {
-            PluginType::Js => Box::new(JsPlugin::new(manifest, &entry_path)?),
+            PluginType::Js => Box::new(JsPlugin::new(
+                manifest.clone(),
+                &entry_path,
+                config.clone(),
+                storage_path,
+            )?),
             PluginType::Wasm => Box::new(WasmPlugin::new(manifest, &entry_path)?),
             PluginType::Ffi => Box::new(FfiPlugin::new(manifest, &entry_path)?),
         };
@@ -698,6 +969,100 @@ impl PluginRegistry {
         let id = info.id.clone();
         self.plugins.insert(id, plugin);
         Ok(info)
+    }
+
+    /// Enable a discovered plugin by loading it at runtime.
+    ///
+    /// Looks up the manifest in `self.discovered`, instantiates the plugin,
+    /// and moves it from discovered to loaded.
+    pub fn enable_plugin(
+        &mut self,
+        id: &str,
+        config: &serde_json::Value,
+    ) -> Result<()> {
+        // Find the manifest in discovered
+        let manifest_idx = self
+            .discovered
+            .iter()
+            .position(|m| m.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Plugin '{}' not found in discovered plugins", id))?;
+
+        let manifest = self.discovered[manifest_idx].clone();
+        let entry_filename = &manifest.entry;
+
+        // Find the plugin directory in data_roots
+        let mut plugin_dir = None;
+        for root in &self.data_roots {
+            let dir = root.join("plugins").join(id);
+            if dir.join("manifest.json").exists() {
+                plugin_dir = Some(dir);
+                break;
+            }
+        }
+        let plugin_dir =
+            plugin_dir.ok_or_else(|| anyhow::anyhow!("Plugin '{}' directory not found", id))?;
+
+        let entry_path = plugin_dir.join(entry_filename);
+        if !entry_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Plugin entry file not found: {}",
+                entry_path.display()
+            ));
+        }
+
+        let storage_path = plugin_dir.join("storage.json");
+
+        let plugin: Box<dyn Plugin> = match manifest.plugin_type {
+            PluginType::Js => Box::new(JsPlugin::new(
+                manifest,
+                &entry_path,
+                config.clone(),
+                storage_path,
+            )?),
+            PluginType::Wasm => Box::new(WasmPlugin::new(manifest, &entry_path)?),
+            PluginType::Ffi => Box::new(FfiPlugin::new(manifest, &entry_path)?),
+        };
+
+        let info = plugin.info();
+        tracing::info!("Enabled plugin: {} v{} ({})", info.name, info.version, info.id);
+
+        self.plugins.insert(id.to_string(), plugin);
+        self.discovered.remove(manifest_idx);
+
+        Ok(())
+    }
+
+    /// Disable a loaded plugin by unloading it.
+    ///
+    /// The plugin's manifest is moved back to the discovered list so it
+    /// can be re-enabled later.
+    pub fn disable_plugin(&mut self, id: &str) {
+        if let Some(plugin) = self.plugins.remove(id) {
+            // Reconstruct a minimal manifest from plugin info for the discovered list
+            let info = plugin.info();
+            let manifest = PluginManifest {
+                id: info.id,
+                name: info.name,
+                version: info.version,
+                description: info.description,
+                plugin_type: match info.plugin_type.as_str() {
+                    "js" => PluginType::Js,
+                    "wasm" => PluginType::Wasm,
+                    "ffi" => PluginType::Ffi,
+                    _ => PluginType::Js, // fallback
+                },
+                entry: String::new(), // will be re-read from disk if re-enabled
+                config_schema: info.config_schema,
+                hooks: HashMap::new(), // hooks are re-read from manifest on re-enable
+            };
+            self.discovered.push(manifest);
+            tracing::info!("Disabled plugin: {}", id);
+        }
+    }
+
+    /// Get all discovered plugin manifests (including those not loaded).
+    pub fn discovered_plugins(&self) -> &[PluginManifest] {
+        &self.discovered
     }
 
     /// Call a method on a loaded plugin.
@@ -719,6 +1084,30 @@ impl PluginRegistry {
         self.plugins.values().map(|p| p.info()).collect()
     }
 
+    /// List all plugins (both loaded and discovered-but-not-loaded).
+    /// Loaded plugins come first, then discovered ones.
+    pub fn list_all(&self) -> Vec<PluginInfo> {
+        let mut result: Vec<PluginInfo> = self.plugins.values().map(|p| p.info()).collect();
+
+        // Add discovered-but-not-loaded plugins
+        for manifest in &self.discovered {
+            if !self.plugins.contains_key(&manifest.id) {
+                result.push(PluginInfo {
+                    id: manifest.id.clone(),
+                    name: manifest.name.clone(),
+                    version: manifest.version.clone(),
+                    description: manifest.description.clone(),
+                    plugin_type: format!("{:?}", manifest.plugin_type).to_lowercase(),
+                    methods: vec![],
+                    config_schema: manifest.config_schema.clone(),
+                    enabled: false,
+                });
+            }
+        }
+
+        result
+    }
+
     /// Check if a plugin with the given id is loaded.
     pub fn has_plugin(&self, id: &str) -> bool {
         self.plugins.contains_key(id)
@@ -727,6 +1116,27 @@ impl PluginRegistry {
     /// Get all loaded plugin ids.
     pub fn plugin_ids(&self) -> Vec<String> {
         self.plugins.keys().cloned().collect()
+    }
+
+    /// Dispatch an event to all loaded plugins that have a hook for it.
+    ///
+    /// Fire-and-forget: errors from individual plugins are logged but don't
+    /// propagate to the caller.
+    pub fn dispatch_event(&self, event: &str, payload: &serde_json::Value) -> Result<()> {
+        for plugin in self.plugins.values() {
+            if let Some(method) = plugin.hook_method(event) {
+                if let Err(e) = plugin.call(method, vec![payload.clone()]) {
+                    tracing::warn!(
+                        "Plugin '{}' hook '{}' (event '{}') failed: {}",
+                        plugin.info().id,
+                        method,
+                        event,
+                        e
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -323,6 +323,12 @@ pub trait ScriptContext: Send + Sync {
 
     /// List all loaded plugins. Returns JSON-encoded `Vec<PluginInfo>`.
     async fn plugin_list(&self) -> Result<String>;
+
+    /// Get plugin configuration value (from EngineConfig.plugins[id].config).
+    fn plugin_config(&self, plugin_id: &str) -> Option<serde_json::Value>;
+
+    /// Check if a plugin is enabled in config.
+    fn plugin_enabled(&self, plugin_id: &str) -> bool;
 }
 
 /// Image recognition capabilities in script context.
