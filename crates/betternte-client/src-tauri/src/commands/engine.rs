@@ -72,6 +72,57 @@ pub async fn init_engine(
     persist_engine_config_file(&state).await?;
     crate::hotkeys::register_hotkeys(&app, &state).await?;
 
+    // Start hot-reload watcher — listens for file changes and triggers reload
+    {
+        let mut guard = state.write_engine("starting hot-reload watcher").await?;
+        if let Some(engine) = guard.as_mut() {
+            let _join = engine.start_hot_reload();
+        }
+    }
+
+    // Spawn a background task that reloads data when DataChanged events arrive.
+    // We subscribe to the event bus here and use the AppHandle to access state later.
+    {
+        let event_bus_guard = state.read_engine("subscribing DataChanged").await?;
+        if let Some(engine) = event_bus_guard.as_ref() {
+            let mut data_changed_rx = engine.event_bus().subscribe();
+            let app_handle = app.clone();
+            drop(event_bus_guard);
+            tokio::spawn(async move {
+                loop {
+                    match data_changed_rx.recv().await {
+                        Ok(betternte_core::EngineEvent::DataChanged) => {
+                            tracing::info!("DataChanged event received, reloading engine data");
+                            let state = app_handle.state::<AppState>();
+                            let mut guard = match state.write_engine("hot-reload").await {
+                                Ok(g) => g,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Could not acquire engine lock for hot-reload");
+                                    continue;
+                                }
+                            };
+                            if let Some(engine) = guard.as_mut() {
+                                engine.reload_scripts();
+                                engine.load_task_groups();
+                                engine.load_flows();
+                                tracing::info!("Hot-reload: scripts/task-groups/flows reloaded");
+                            }
+                        }
+                        Ok(_) => {
+                            // Other events — ignore for this listener
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(skipped = n, "DataChanged listener lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    }
+
     tracing::info!("Engine created (idle)");
     Ok("Engine created".into())
 }

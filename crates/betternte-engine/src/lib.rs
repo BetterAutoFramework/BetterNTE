@@ -31,6 +31,7 @@ pub mod replay_verify;
 pub mod script_ctx;
 pub mod scripts;
 pub mod task_groups;
+mod watcher;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -454,9 +455,70 @@ impl Engine {
         }
     }
 
+    /// Start a background task that watches all data roots for file changes.
+    ///
+    /// When a `.json` or `.js` file is created, modified, or removed, the engine
+    /// reloads scripts, task-groups, and flows after a 500ms debounce window.
+    /// Returns a `JoinHandle` that runs for the lifetime of the engine.
+    pub fn start_hot_reload(&self) -> tokio::task::JoinHandle<()> {
+        let data_roots = self.data_root.roots().to_vec();
+        // Since Engine is behind RwLock in the Tauri client, we cannot call &self
+        // reload methods from the spawned watcher task. Instead, we publish a
+        // DataChanged event on the EventBus; the client-side listener handles reload.
+        let event_bus = self.event_bus.clone();
+
+        tokio::spawn(async move {
+            let (_watcher, mut rx) = match watcher::DataWatcher::new(&data_roots) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to start data watcher");
+                    return;
+                }
+            };
+
+            tracing::info!("Hot-reload watcher started for {} data roots", data_roots.len());
+
+            loop {
+                // Wait for any file change signal
+                if rx.recv().await.is_none() {
+                    tracing::info!("Data watcher channel closed, stopping hot-reload");
+                    break;
+                }
+
+                // Debounce: drain rapid-fire events within 500ms
+                loop {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(500),
+                        rx.recv(),
+                    )
+                    .await
+                    {
+                        Ok(Some(())) => {
+                            // More changes arrived during debounce window, keep draining
+                        }
+                        Ok(None) => {
+                            // Channel closed
+                            return;
+                        }
+                        Err(_) => {
+                            // 500ms elapsed with no more changes — time to reload
+                            break;
+                        }
+                    }
+                }
+
+                tracing::info!("Data directory change detected, triggering reload");
+                let _ = event_bus.publish(betternte_core::EngineEvent::DataChanged);
+            }
+        })
+    }
+
     /// Get the local source directory (for writing user-created content).
+    ///
+    /// Writes target the user home root (`~/.betternte/data/local/`) so that
+    /// user-created content persists across app updates.
     pub(crate) fn local_dir(&self, sub_dir: &str) -> std::path::PathBuf {
-        self.data_root.primary().join("local").join(sub_dir)
+        self.data_root.user_root().join("local").join(sub_dir)
     }
 
     /// Get all enabled subscription scripts/ and triggers/ directories across all data roots.

@@ -6,7 +6,8 @@
 //!   3. `$BETTERNTE_DATA_DIR/data/` — environment variable
 //!
 //! Higher-priority roots override lower-priority ones when scanning for scripts,
-//! task groups, and flows. Write operations always target the highest-priority root.
+//! task groups, and flows. User-created content is written to `user_root()` (~/.betternte/data/)
+//! so it persists across app updates.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -53,6 +54,16 @@ impl DataRoot {
         &self.roots[0]
     }
 
+    /// Get the user home data root (`~/.betternte/data/`).
+    ///
+    /// Used for user-created content that should persist across app updates.
+    /// Falls back to `primary()` if only one root exists (no home dir resolved).
+    pub fn user_root(&self) -> &PathBuf {
+        // user_root is always the second root (priority 2)
+        // If only one root exists (no home dir), fall back to primary
+        self.roots.get(1).unwrap_or(&self.roots[0])
+    }
+
     /// Resolve a relative path against the merged data root.
     /// Returns the first existing path from highest to lowest priority.
     /// If none exist, returns the path in the highest-priority root.
@@ -93,7 +104,7 @@ impl DataRoot {
         result
     }
 
-    /// Ensure the primary data root and its subdirectories exist.
+    /// Ensure the primary data root and user_root subdirectories exist.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         let primary = self.primary();
         for subdir in &[
@@ -106,6 +117,21 @@ impl DataRoot {
         ] {
             std::fs::create_dir_all(primary.join(subdir))?;
         }
+
+        // Also ensure user_root has local/ directories for user-created content
+        let user = self.user_root();
+        if user != primary {
+            for subdir in &[
+                "local",
+                "local/scripts",
+                "local/triggers",
+                "local/task-groups",
+                "local/flows",
+            ] {
+                std::fs::create_dir_all(user.join(subdir))?;
+            }
+        }
+
         Ok(())
     }
 }
