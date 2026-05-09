@@ -341,8 +341,6 @@ export const mockConfig: EngineConfig = {
   security: {
     mode: "normal",
   },
-  active_plugin: "nte",
-  plugin_search_paths: ["data/plugins"],
 };
 
 export const mockStoreScripts: StoreScript[] = [

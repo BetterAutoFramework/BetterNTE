@@ -48,32 +48,6 @@ impl Engine {
         self.scripts_store = Vec::new();
         self.triggers_store = Vec::new();
 
-        if let Some(plugin_root) = self.active_plugin_root() {
-            info!(
-                plugin = %self.active_plugin_id(),
-                root = %plugin_root.display(),
-                "Scanning active plugin scripts/triggers first"
-            );
-            let source = format!("插件:{}", self.active_plugin_id());
-            let plugin_scripts_dir = plugin_root.join("scripts");
-            self.scripts_store.extend(super::loader::load_scripts(
-                &plugin_scripts_dir,
-                &source,
-                &data_root,
-            ));
-            let plugin_triggers_dir = plugin_root.join("triggers");
-            self.triggers_store.extend(super::loader::load_scripts(
-                &plugin_triggers_dir,
-                &source,
-                &data_root,
-            ));
-        } else {
-            info!(
-                plugin = %self.active_plugin_id(),
-                "Active plugin manifest not found, fallback to subscriptions only"
-            );
-        }
-
         for sub in &self.config.scripts.subscriptions {
             if !sub.enabled {
                 info!(name = %sub.name, dir = %sub.directory, "Skipping disabled subscription");

@@ -39,10 +39,6 @@ pub struct EngineConfig {
     pub replay: ReplayConfig,
     #[serde(default)]
     pub security: SecurityConfig,
-    #[serde(default = "default_active_plugin")]
-    pub active_plugin: String,
-    #[serde(default = "default_plugin_search_paths")]
-    pub plugin_search_paths: Vec<String>,
 }
 
 impl Default for EngineConfig {
@@ -62,8 +58,6 @@ impl Default for EngineConfig {
             advanced: AdvancedConfig::default(),
             replay: ReplayConfig::default(),
             security: SecurityConfig::default(),
-            active_plugin: default_active_plugin(),
-            plugin_search_paths: default_plugin_search_paths(),
         }
     }
 }
@@ -918,12 +912,4 @@ impl Default for TriggerState {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_active_plugin() -> String {
-    "nte".to_string()
-}
-
-fn default_plugin_search_paths() -> Vec<String> {
-    vec!["plugins".to_string()]
 }

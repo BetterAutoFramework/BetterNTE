@@ -169,15 +169,6 @@ export interface EngineConfig {
   advanced: AdvancedConfig;
   replay: ReplayConfig;
   security: SecurityConfig;
-  active_plugin: string;
-  plugin_search_paths: string[];
-}
-
-export interface GamePluginInfo {
-  id: string;
-  name: string;
-  version: string;
-  manifest_path: string;
 }
 
 export interface TriggerState {

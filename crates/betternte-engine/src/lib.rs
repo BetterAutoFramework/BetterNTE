@@ -165,7 +165,6 @@ impl Engine {
                 Some(replay_playback::discover_replay_frames(
                     &self.base_dir,
                     &self.config.replay,
-                    self.active_plugin_id(),
                 )?)
             }
             betternte_core::ReplayMode::Normal | betternte_core::ReplayMode::Record => {
@@ -464,11 +463,6 @@ impl Engine {
     /// 获取所有已启用订阅源的 scripts/ 和 triggers/ 目录（供 ScriptRuntime 使用）。
     pub(crate) fn all_script_dirs(&self) -> Vec<std::path::PathBuf> {
         let mut dirs = Vec::new();
-        if let Some(plugin_root) = self.active_plugin_root() {
-            dirs.push(plugin_root.join("scripts"));
-            dirs.push(plugin_root.join("triggers"));
-        }
-
         let data_root = self.data_root();
         dirs.extend(
             self.config
@@ -485,37 +479,6 @@ impl Engine {
         dirs
     }
 
-    /// 当前激活插件 ID（空值时回落为默认值）。
-    pub(crate) fn active_plugin_id(&self) -> &str {
-        let id = self.config.active_plugin.trim();
-        if id.is_empty() {
-            "nte"
-        } else {
-            id
-        }
-    }
-
-    /// 解析当前激活插件根目录（包含 manifest.json）。
-    pub(crate) fn active_plugin_root(&self) -> Option<std::path::PathBuf> {
-        let data_root = self.data_root();
-        for rel in &self.config.plugin_search_paths {
-            let rel = rel.trim();
-            if rel.is_empty() {
-                continue;
-            }
-            let root = if std::path::Path::new(rel).is_absolute() {
-                std::path::PathBuf::from(rel)
-            } else {
-                data_root.join(rel)
-            };
-            let plugin_dir = root.join(self.active_plugin_id());
-            if plugin_dir.join("manifest.json").is_file() {
-                return Some(plugin_dir);
-            }
-        }
-        None
-    }
-
     /// 更新配置。
     ///
     /// - `scripts.data_root/subscriptions`：热重载脚本与 Flow 索引。
@@ -526,8 +489,6 @@ impl Engine {
         let was_running = self.is_running();
         let data_root_changed = old.scripts.data_root != config.scripts.data_root;
         let subs_changed = old.scripts.subscriptions != config.scripts.subscriptions;
-        let plugin_changed = old.active_plugin != config.active_plugin
-            || old.plugin_search_paths != config.plugin_search_paths;
         let notify_changed = !config_notifications_equal(&old.notifications, &config.notifications);
         let runtime_restart_required = config_runtime_restart_required(&old, &config);
 
@@ -545,7 +506,7 @@ impl Engine {
             ));
         }
         self.ensure_local_subscription();
-        if data_root_changed || subs_changed || plugin_changed {
+        if data_root_changed || subs_changed {
             let _ = self.reload_scripts();
             self.load_flows();
             let _ = self.load_task_groups();

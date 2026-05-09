@@ -882,7 +882,6 @@ pub fn run() {
             commands::settings::find_game_window,
             commands::settings::test_screenshot,
             commands::settings::test_notification_channel,
-            commands::settings::list_game_plugins,
             commands::settings::export_logs,
             commands::settings::better_nte_debug_enabled,
         ])

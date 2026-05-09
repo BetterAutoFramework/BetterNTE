@@ -489,10 +489,6 @@ export function mapEngineConfig(raw: Record<string, unknown>): EngineConfig {
     security: {
       mode: String(security.mode ?? "normal") === "strict" ? "strict" : "normal",
     },
-    active_plugin: String(raw.active_plugin ?? "nte"),
-    plugin_search_paths: Array.isArray(raw.plugin_search_paths)
-      ? (raw.plugin_search_paths as unknown[]).map((p) => String(p))
-      : ["plugins"],
   };
 }
 
@@ -561,7 +557,5 @@ export function mapConfigToRust(config: EngineConfig): Record<string, unknown> {
       frame_sample_interval: config.replay.frame_sample_interval,
     },
     security: config.security,
-    active_plugin: config.active_plugin,
-    plugin_search_paths: config.plugin_search_paths,
   };
 }

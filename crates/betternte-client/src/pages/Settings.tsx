@@ -32,7 +32,6 @@ import { mapEngineConfig, useEngineStore } from "@/lib/store";
 import { invokeAction } from "@/lib/stores/helpers";
 import type {
   EngineConfig,
-  GamePluginInfo,
   HotkeyTriggersConfig,
   Subscription,
 } from "@/lib/types";
@@ -163,21 +162,6 @@ function updateConfig(
       [field]: value,
     },
   };
-}
-
-type RootConfigField = "active_plugin" | "plugin_search_paths";
-
-function updateRootConfig(
-  config: EngineConfig,
-  field: RootConfigField,
-  value: unknown
-): EngineConfig {
-  return {
-    ...config,
-    [field]: value,
-  };
-}
-
 // ============================================================================
 // File/Directory Picker Button
 // ============================================================================
@@ -229,91 +213,11 @@ function FolderPicker({
 
 function GeneralSettings({
   config,
-  onRootChange,
 }: {
   config: EngineConfig;
-  onRootChange: (field: RootConfigField, value: unknown) => void;
 }) {
-  const [plugins, setPlugins] = useState<GamePluginInfo[]>([]);
-  const [pluginsLoading, setPluginsLoading] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    setPluginsLoading(true);
-    void invokeAction<GamePluginInfo[]>("list_game_plugins", undefined, { silent: true })
-      .then((list) => {
-        if (alive && Array.isArray(list)) {
-          setPlugins(list);
-        }
-      })
-      .finally(() => {
-        if (alive) setPluginsLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [config.plugin_search_paths, config.scripts.data_root]);
-
-  const handleActivePluginChange = (nextPluginId: string) => {
-    const currentPluginId = config.active_plugin || "nte";
-    if (nextPluginId === currentPluginId) return;
-    const ok = window.confirm(
-      `切换插件将从「${nextPluginId}」的 manifest 回填并覆盖当前的游戏设置、截图配置、脚本目录与订阅源配置。\n\n是否继续？`
-    );
-    if (!ok) return;
-    onRootChange("active_plugin", nextPluginId);
-  };
-
   return (
     <>
-      <CardExpander
-        icon={<Globe className="w-4 h-4" />}
-        title="插件设置"
-        description="选择游戏插件与搜索路径（通用框架预留）"
-        defaultOpen={true}
-      >
-        <SettingRow label="当前插件" description="当前正在使用的游戏插件">
-          <SelectInput
-            value={config.active_plugin || "nte"}
-            onChange={handleActivePluginChange}
-            options={[
-              ...(plugins.length > 0
-                ? plugins.map((p) => ({
-                    label: `${p.name} (${p.id})`,
-                    value: p.id,
-                  }))
-                : [{ label: "异环 (默认)", value: "nte" }]),
-              ...(!plugins.some((p) => p.id === config.active_plugin) && config.active_plugin
-                ? [{ label: `${config.active_plugin} (手动)`, value: config.active_plugin }]
-                : []),
-            ]}
-          />
-        </SettingRow>
-        <SettingRow
-          label="插件搜索路径"
-          description="脚本搜索路径。可填写多个，用英文逗号分隔。"
-        >
-          <TextInput
-            value={(config.plugin_search_paths ?? []).join(", ")}
-            onChange={(v) =>
-              onRootChange(
-                "plugin_search_paths",
-                v
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-              )
-            }
-            placeholder="例如：plugins, community/plugins"
-          />
-        </SettingRow>
-        <div className="text-xs text-foreground-tertiary">
-          {pluginsLoading
-            ? "正在扫描插件..."
-            : `已发现 ${plugins.length} 个插件（基于当前 data_root 与搜索路径）`}
-        </div>
-      </CardExpander>
-
       <CardExpander
         icon={<Gamepad2 className="w-4 h-4" />}
         title="游戏设置"
@@ -1650,17 +1554,6 @@ export function Settings() {
     [autoSave]
   );
 
-  const handleRootChange = useCallback(
-    (field: RootConfigField, value: unknown) => {
-      setDraft((prev) => {
-        if (!prev) return prev;
-        const updated = updateRootConfig(prev, field, value);
-        autoSave(updated);
-        return updated;
-      });
-    },
-    [autoSave]
-  );
 
   const handleHotkeyTriggersReplace = useCallback(
     (triggers: HotkeyTriggersConfig) => {
@@ -1722,7 +1615,7 @@ export function Settings() {
   const sectionProps = { config: draft, onChange: handleChange };
 
   const tabContent: Record<SettingsTab, React.ReactNode> = {
-    general: <GeneralSettings config={draft} onRootChange={handleRootChange} />,
+    general: <GeneralSettings config={draft} />,
     capture: <CaptureSettings {...sectionProps} />,
     hotkeys: (
       <HotkeySettings

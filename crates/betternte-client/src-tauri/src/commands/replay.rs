@@ -68,10 +68,5 @@ fn replay_artifact_root(engine: &betternte_engine::Engine) -> Result<std::path::
                 .into(),
         );
     }
-    let plugin_id = if engine.config().active_plugin.trim().is_empty() {
-        "nte"
-    } else {
-        engine.config().active_plugin.trim()
-    };
-    Ok(engine.resolved_config_path(raw).join(plugin_id))
+    Ok(engine.resolved_config_path(raw))
 }
