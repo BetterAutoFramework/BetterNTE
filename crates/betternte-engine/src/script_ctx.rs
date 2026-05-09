@@ -624,14 +624,20 @@ impl EngineScriptContext {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("Capture engine not initialized"))?;
 
-        let mut core_frame: CoreCaptureFrame = engine.capture().await?;
+        let core_frame: CoreCaptureFrame = engine.capture().await?;
+        let mut core_frame = core_frame;
         core_frame.source = "engine_fallback".to_string();
         core_frame.sequence = self.frame_number.fetch_add(1, Ordering::Relaxed) + 1;
 
-        // Update cache
-        *self.frame_cache.lock().await = Some(core_frame.clone());
+        // Swap clone direction: store the original (with recycle_fn) in cache,
+        // return a clone (without recycle_fn) to the caller.
+        // This way, when the cache is overwritten, the old frame's recycle_fn
+        // returns its buffer to the capture engine's pool — achieving true
+        // zero-allocation recycling on subsequent captures.
+        let caller_frame = core_frame.clone();
+        *self.frame_cache.lock().await = Some(core_frame);
 
-        Ok(core_frame)
+        Ok(caller_frame)
     }
 
     /// Convert a core CaptureFrame to DynamicImage for vision operations.

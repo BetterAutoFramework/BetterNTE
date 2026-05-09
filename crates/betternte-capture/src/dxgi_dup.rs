@@ -546,10 +546,12 @@ impl DxgiDupCapture {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.frame_counter += 1;
-            state.last_frame = Some(frame.clone());
+            // Store original (with recycle_fn) in last_frame so the buffer
+            // returns to pixel_buffer when the cache is overwritten.
+            let caller_frame = frame.clone();
+            state.last_frame = Some(frame);
+            return Ok(caller_frame);
         }
-
-        Ok(frame)
     }
 
     fn create_staging_texture(
