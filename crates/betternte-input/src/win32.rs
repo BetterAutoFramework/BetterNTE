@@ -591,8 +591,25 @@ impl Win32Input {
         if duration.is_zero() {
             return self.swipe_cancel_at.load(Ordering::SeqCst) < token;
         }
-        tokio::time::sleep(duration).await;
-        self.swipe_cancel_at.load(Ordering::SeqCst) < token
+        let cancel_flag = &self.swipe_cancel_at;
+        let poll_interval = Duration::from_millis(5);
+        tokio::select! {
+            _ = tokio::time::sleep(duration) => {
+                // Sleep completed — check once more.
+                cancel_flag.load(Ordering::SeqCst) < token
+            }
+            _ = async {
+                loop {
+                    if cancel_flag.load(Ordering::SeqCst) >= token {
+                        break;
+                    }
+                    tokio::time::sleep(poll_interval).await;
+                }
+            } => {
+                // Cancel detected.
+                false
+            }
+        }
     }
 }
 
@@ -669,6 +686,10 @@ impl InputController for Win32Input {
                         WPARAM(MK_LBUTTON),
                         lparam,
                     );
+                }
+                // Small delay so games can register the press.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                unsafe {
                     let _ =
                         PostMessageW(Some(HWND(hwnd as *mut _)), WM_LBUTTONUP, WPARAM(0), lparam);
                 }
@@ -717,8 +738,15 @@ impl InputController for Win32Input {
                         WPARAM(MK_RBUTTON),
                         lparam,
                     );
-                    let _ =
-                        PostMessageW(Some(HWND(hwnd as *mut _)), WM_RBUTTONUP, WPARAM(0), lparam);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                unsafe {
+                    let _ = PostMessageW(
+                        Some(HWND(hwnd as *mut _)),
+                        WM_RBUTTONUP,
+                        WPARAM(0),
+                        lparam,
+                    );
                 }
             }
         }
