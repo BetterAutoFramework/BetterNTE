@@ -3,16 +3,17 @@
 //! Supports three plugin types:
 //! - **JS**: Runs in an isolated QuickJS runtime
 //! - **WASM**: WebAssembly plugins via wasmtime
-//! - **FFI**: Native dynamic library plugins (stub, TODO)
+//! - **FFI**: Native dynamic library plugins via libloading
 //!
 //! Plugins are discovered from `data/plugins/{plugin-id}/` directories.
 //! Each plugin has a `manifest.json` and an entry file.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use libloading::{Library, Symbol};
 use serde::{Deserialize, Serialize};
 
 // ━━━ Manifest ━━━
@@ -386,22 +387,102 @@ impl Plugin for WasmPlugin {
     }
 }
 
-// ━━━ FFI Plugin (stub) ━━━
+// ━━━ FFI Plugin ━━━
 
 /// FFI plugin — loads a native dynamic library (.dll / .so / .dylib).
 ///
-/// **Status**: Stub implementation. TODO: implement with libloading.
+/// The library must export:
+/// - `__plugin_info() -> *const c_char` — returns plugin info as JSON
+/// - `__plugin_call(name: *const c_char, args_json: *const c_char) -> *const c_char` — call a method
+/// - `__plugin_free(ptr: *const c_char)` (optional) — free returned strings
+///
+/// All returned strings are null-terminated C strings owned by the plugin.
+/// If `__plugin_free` is not exported, static buffers are assumed.
+
+// Type aliases for the C ABI function pointers
+type InfoFn = unsafe extern "C" fn() -> *const std::ffi::c_char;
+type CallFn = unsafe extern "C" fn(
+    *const std::ffi::c_char,
+    *const std::ffi::c_char,
+) -> *const std::ffi::c_char;
+type FreeFn = unsafe extern "C" fn(*const std::ffi::c_char);
+
 pub struct FfiPlugin {
     manifest: PluginManifest,
+    /// Keep the dynamic library loaded for the lifetime of the plugin.
+    _lib: Arc<Library>,
+    methods: Vec<String>,
+    /// Cached function pointers (valid as long as `_lib` is alive).
+    info_fn: InfoFn,
+    call_fn: CallFn,
+    free_fn: Option<FreeFn>,
 }
 
 impl FfiPlugin {
-    pub fn new(manifest: PluginManifest, _entry_path: &Path) -> Result<Self> {
-        tracing::warn!(
-            "FFI plugin '{}' loaded but not yet implemented (stub)",
-            manifest.name
-        );
-        Ok(Self { manifest })
+    pub fn new(manifest: PluginManifest, entry_path: &Path) -> Result<Self> {
+        unsafe {
+            let lib = Library::new(entry_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to load FFI plugin library '{}': {}",
+                    entry_path.display(),
+                    e
+                )
+            })?;
+            let lib = Arc::new(lib);
+
+            // Get required __plugin_info function
+            let info_fn: Symbol<InfoFn> = lib.get(b"__plugin_info").map_err(|e| {
+                anyhow::anyhow!("FFI plugin missing '__plugin_info' export: {}", e)
+            })?;
+            let info_fn = *info_fn;
+
+            // Get required __plugin_call function
+            let call_fn: Symbol<CallFn> = lib.get(b"__plugin_call").map_err(|e| {
+                anyhow::anyhow!("FFI plugin missing '__plugin_call' export: {}", e)
+            })?;
+            let call_fn = *call_fn;
+
+            // Get optional __plugin_free function
+            let free_fn: Option<FreeFn> = lib.get(b"__plugin_free").ok().map(|s: Symbol<FreeFn>| *s);
+
+            // Call __plugin_info to discover available methods
+            let info_ptr = info_fn();
+            if info_ptr.is_null() {
+                return Err(anyhow::anyhow!("__plugin_info returned null"));
+            }
+            let info_cstr = std::ffi::CStr::from_ptr(info_ptr);
+            let info_str = info_cstr.to_str().map_err(|e| {
+                anyhow::anyhow!("__plugin_info returned invalid UTF-8: {}", e)
+            })?;
+
+            #[derive(Deserialize)]
+            struct FfiPluginInfo {
+                #[serde(default)]
+                methods: Vec<String>,
+            }
+
+            let ffi_info: FfiPluginInfo = serde_json::from_str(info_str)?;
+
+            // Free the info string if a free function is available
+            if let Some(free) = free_fn {
+                free(info_ptr);
+            }
+
+            tracing::info!(
+                "FFI plugin '{}' loaded with methods: {:?}",
+                manifest.name,
+                ffi_info.methods
+            );
+
+            Ok(Self {
+                manifest,
+                _lib: lib,
+                methods: ffi_info.methods,
+                info_fn,
+                call_fn,
+                free_fn,
+            })
+        }
     }
 }
 
@@ -413,18 +494,60 @@ impl Plugin for FfiPlugin {
             version: self.manifest.version.clone(),
             description: self.manifest.description.clone(),
             plugin_type: "ffi".to_string(),
-            methods: vec![],
+            methods: self.methods.clone(),
         }
     }
 
-    fn call(&self, method: &str, _args: Vec<serde_json::Value>) -> Result<serde_json::Value> {
-        Err(anyhow::anyhow!(
-            "FFI plugin '{}' method '{}' not yet implemented",
-            self.manifest.id,
-            method
-        ))
+    fn call(&self, method: &str, args: Vec<serde_json::Value>) -> Result<serde_json::Value> {
+        if !self.methods.contains(&method.to_string()) {
+            return Err(anyhow::anyhow!(
+                "Method '{}' not found in FFI plugin '{}'. Available: {:?}",
+                method,
+                self.manifest.id,
+                self.methods
+            ));
+        }
+
+        unsafe {
+            let name_cstr = std::ffi::CString::new(method)?;
+            let args_json = serde_json::to_string(&args)?;
+            let args_cstr = std::ffi::CString::new(args_json)?;
+
+            let result_ptr = (self.call_fn)(name_cstr.as_ptr(), args_cstr.as_ptr());
+
+            if result_ptr.is_null() {
+                return Err(anyhow::anyhow!(
+                    "__plugin_call returned null for method '{}'",
+                    method
+                ));
+            }
+
+            let result_cstr = std::ffi::CStr::from_ptr(result_ptr);
+            let result_str = result_cstr.to_str().map_err(|e| {
+                anyhow::anyhow!(
+                    "__plugin_call returned invalid UTF-8 for method '{}': {}",
+                    method,
+                    e
+                )
+            })?;
+
+            let result: serde_json::Value = serde_json::from_str(result_str)?;
+
+            // Free the result if a free function is available
+            if let Some(free) = self.free_fn {
+                free(result_ptr);
+            }
+
+            Ok(result)
+        }
     }
 }
+
+// SAFETY: The Library is kept alive via Arc, and the cached function pointers
+// are valid as long as the library is loaded (i.e., for the lifetime of FfiPlugin).
+// The C ABI functions are assumed to be safe to call from any thread.
+unsafe impl Send for FfiPlugin {}
+unsafe impl Sync for FfiPlugin {}
 
 // ━━━ Plugin Registry ━━━
 

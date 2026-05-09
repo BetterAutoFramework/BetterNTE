@@ -550,6 +550,7 @@ dependencies = [
  "betternte-core",
  "betternte-input",
  "betternte-vision",
+ "libloading 0.8.9",
  "rquickjs",
  "semver",
  "serde",
