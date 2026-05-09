@@ -1,14 +1,18 @@
 //! betternte-input: Input simulation module.
 //!
-//! Provides input simulation for PC native windows (foreground via SendInput
-//! through `enigo`, background via PostMessage) and Android emulators (via
-//! `adb shell input`). A failover wrapper transparently switches between
-//! primary and fallback backends.
+//! Cross-platform input simulation for PC native windows and Android emulators:
+//!
+//! - **Windows**: SendInput (foreground via `enigo`) + PostMessage (background)
+//! - **Linux**: `xdotool` (X11 foreground) + `xdotool` window-specific (background)
+//! - **macOS**: `cliclick` + `osascript` (AppleScript)
+//! - **Android**: `adb shell input` (all platforms)
+//!
+//! A failover wrapper transparently switches between primary and fallback backends.
 //!
 //! # Architecture
 //!
 //! - [`InputController`]: Core trait for all input engines (from betternte-core)
-//! - [`Win32Input`]: Win32 implementation using enigo (foreground) and PostMessage (background)
+//! - Platform-specific engines (Win32Input / LinuxInput / MacInput)
 //! - [`AdbInput`]: ADB implementation for Android emulators
 //! - [`InputQueue`]: Serializes input operations with rate limiting
 //! - [`InputRecorder`] / [`MacroPlayer`]: Macro recording and playback
@@ -43,7 +47,13 @@ pub mod queued_controller;
 pub mod recorder;
 pub mod recording_controller;
 pub mod target;
+
+#[cfg(windows)]
 pub mod win32;
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 // Re-exports
 pub use action::{InputAction, InputEvent};
@@ -60,7 +70,13 @@ pub use queued_controller::QueuedInputController;
 pub use recorder::{InputRecorder, Macro, MacroPlayer};
 pub use recording_controller::{InputRecordEvent, InputRecordSink, RecordingInputController};
 pub use target::InputTarget;
+
+#[cfg(windows)]
 pub use win32::Win32Input;
+#[cfg(target_os = "linux")]
+pub use linux::LinuxInput;
+#[cfg(target_os = "macos")]
+pub use macos::MacInput;
 
 // Tests
 #[cfg(test)]

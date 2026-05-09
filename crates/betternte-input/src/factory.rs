@@ -7,7 +7,6 @@ use crate::adb::AdbInput;
 use crate::controller::InputController;
 use crate::mapper::KeyMapper;
 use crate::target::InputTarget;
-use crate::win32::Win32Input;
 
 /// Create an input controller based on target type.
 pub fn create_input_controller(
@@ -18,7 +17,7 @@ pub fn create_input_controller(
 
     match target {
         InputTarget::NativeWindow { .. } | InputTarget::NativeWindowBackground { .. } => {
-            Box::new(Win32Input::new(mapper))
+            create_native_controller(mapper)
         }
         InputTarget::AdbDevice { serial } => Box::new(AdbInput::new(serial.clone(), mapper)),
         InputTarget::MumuEmulator { .. } => {
@@ -40,18 +39,25 @@ mod tests {
         HashMap::new()
     }
 
+    #[cfg(windows)]
+    const NATIVE_NAME: &str = "Win32";
+    #[cfg(target_os = "linux")]
+    const NATIVE_NAME: &str = "Linux";
+    #[cfg(target_os = "macos")]
+    const NATIVE_NAME: &str = "macOS";
+
     #[test]
     fn test_native_window_creates_win32() {
         let target = InputTarget::NativeWindow { hwnd: 12345 };
         let ctrl = create_input_controller(&target, &empty_bindings());
-        assert_eq!(ctrl.name(), "Win32");
+        assert_eq!(ctrl.name(), NATIVE_NAME);
     }
 
     #[test]
     fn test_native_window_background_creates_win32() {
         let target = InputTarget::NativeWindowBackground { hwnd: 12345 };
         let ctrl = create_input_controller(&target, &empty_bindings());
-        assert_eq!(ctrl.name(), "Win32");
+        assert_eq!(ctrl.name(), NATIVE_NAME);
     }
 
     #[test]
@@ -83,6 +89,27 @@ mod tests {
         bindings.insert("enter".into(), "return".into());
         let target = InputTarget::NativeWindow { hwnd: 0 };
         let ctrl = create_input_controller(&target, &bindings);
-        assert_eq!(ctrl.name(), "Win32");
+        assert_eq!(ctrl.name(), NATIVE_NAME);
     }
+}
+
+/// Create a platform-specific native window input controller.
+#[cfg(windows)]
+fn create_native_controller(mapper: KeyMapper) -> Box<dyn InputController> {
+    Box::new(crate::win32::Win32Input::new(mapper))
+}
+
+#[cfg(target_os = "linux")]
+fn create_native_controller(mapper: KeyMapper) -> Box<dyn InputController> {
+    Box::new(crate::linux::LinuxInput::new(mapper))
+}
+
+#[cfg(target_os = "macos")]
+fn create_native_controller(mapper: KeyMapper) -> Box<dyn InputController> {
+    Box::new(crate::macos::MacInput::new(mapper))
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn create_native_controller(_mapper: KeyMapper) -> Box<dyn InputController> {
+    panic!("No native input backend for this platform. Use ADB for emulator input.")
 }

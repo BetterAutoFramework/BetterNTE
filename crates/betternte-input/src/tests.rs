@@ -20,6 +20,8 @@ mod tests {
     use crate::queue::InputQueue;
     use crate::recorder::{InputRecorder, Macro, MacroPlayer};
     use crate::target::InputTarget;
+
+    #[cfg(windows)]
     use crate::win32::Win32Input;
 
     /// Mock InputController for testing
@@ -1027,6 +1029,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(windows)]
     async fn test_error_win32_with_adb_target() {
         let mut win32 = Win32Input::new(KeyMapper::new(HashMap::new()));
         let target = InputTarget::AdbDevice {

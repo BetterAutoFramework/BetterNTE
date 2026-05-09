@@ -18,6 +18,7 @@ thiserror.workspace = true
 enigo.workspace = true
 
 # Win32 API
+[target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
