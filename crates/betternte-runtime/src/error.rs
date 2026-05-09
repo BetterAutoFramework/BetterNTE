@@ -33,9 +33,6 @@ pub enum FlowError {
         actual: String,
     },
 
-    #[error("Permission denied: {0}")]
-    PermissionDenied(String),
-
     #[error("Script error: {0}")]
     ScriptError(String),
 

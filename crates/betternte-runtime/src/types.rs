@@ -649,9 +649,6 @@ pub struct ScriptManifest {
     /// 依赖
     #[serde(default)]
     pub dependencies: Vec<String>,
-    /// 权限
-    #[serde(default)]
-    pub permissions: Permissions,
     /// 参数 schema
     #[serde(default)]
     pub params_schema: Option<serde_json::Value>,
@@ -670,47 +667,6 @@ pub enum ScriptType {
     Task,
     Trigger,
     Library,
-}
-
-/// 权限声明
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Permissions {
-    /// 必需权限
-    #[serde(default)]
-    pub required: Vec<Permission>,
-    /// 可选权限
-    #[serde(default)]
-    pub optional: Vec<Permission>,
-}
-
-/// 权限枚举
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum Permission {
-    /// 截图
-    Capture,
-    /// 输入模拟
-    Input,
-    /// 窗口管理
-    Window,
-    /// 文件读取
-    FileRead { paths: Vec<String> },
-    /// 文件写入
-    FileWrite { paths: Vec<String> },
-    /// 网络请求
-    Network { domains: Vec<String> },
-    /// 存储
-    Storage,
-    /// 调用其他脚本
-    CallScript,
-    /// 状态机操作
-    StateMachine,
-    /// 触发器管理
-    Trigger,
-    /// 通知
-    Notify,
-    /// 系统命令
-    SystemCommand,
 }
 
 // ============================================================================

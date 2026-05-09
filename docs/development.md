@@ -264,7 +264,7 @@ Win32 分层透明窗口（`WS_EX_TRANSPARENT + WS_EX_LAYERED`），可覆盖在
 - `Condition` — 条件枚举（Always、Template、Ocr、Color、Variable、Hotkey、Script、And/Or/Not）
 - `FlowExecutor` — 执行器主循环
 - `VariableStore` — 双层变量系统（默认值 + 持久化），支持引用解析（`$variables.x`、`$result.y`）
-- `PermissionGuard` — 基于 manifest 的权限沙箱
+- `PermissionGuard` — 基于 manifest 的权限沙箱（已移除）
 
 ---
 

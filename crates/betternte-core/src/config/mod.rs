@@ -37,8 +37,6 @@ pub struct EngineConfig {
     pub game: GameConfig,
     pub advanced: AdvancedConfig,
     pub replay: ReplayConfig,
-    #[serde(default)]
-    pub security: SecurityConfig,
     #[serde(default = "default_active_plugin")]
     pub active_plugin: String,
     #[serde(default = "default_plugin_search_paths")]
@@ -61,39 +59,8 @@ impl Default for EngineConfig {
             game: GameConfig::default(),
             advanced: AdvancedConfig::default(),
             replay: ReplayConfig::default(),
-            security: SecurityConfig::default(),
             active_plugin: default_active_plugin(),
             plugin_search_paths: default_plugin_search_paths(),
-        }
-    }
-}
-
-// ============================================================================
-// Security
-// ============================================================================
-
-/// Global script API permission enforcement mode (manifest `permissions` vs `ctx.*` usage).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SecurityMode {
-    /// Log error, cancel task, block the API call.
-    #[default]
-    Strict,
-    /// Log warning only; allow the call.
-    Normal,
-}
-
-/// Security-related engine options.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SecurityConfig {
-    pub mode: SecurityMode,
-}
-
-impl Default for SecurityConfig {
-    fn default() -> Self {
-        Self {
-            mode: SecurityMode::Normal,
         }
     }
 }

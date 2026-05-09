@@ -132,10 +132,6 @@ pub struct Manifest {
     /// 配置 Schema 文件路径
     pub settings_ui: Option<String>,
 
-    /// 权限声明
-    #[serde(default)]
-    pub permissions: Vec<String>,
-
     /// 标签
     #[serde(default)]
     pub tags: Vec<String>,
@@ -298,7 +294,6 @@ mod tests {
             script_type: ScriptType::SoloTask,
             entry: "main.js".into(),
             settings_ui: None,
-            permissions: vec![],
             tags: vec![],
             category: None,
             params_schema: None,

@@ -538,12 +538,6 @@ impl Engine {
 
         info!("Engine config updated");
         self.config = config;
-        if let Some(ctx) = self.script_ctx.as_ref() {
-            ctx.set_manifest_security_strict(matches!(
-                self.config.security.mode,
-                betternte_core::config::SecurityMode::Strict
-            ));
-        }
         self.ensure_local_subscription();
         if data_root_changed || subs_changed || plugin_changed {
             let _ = self.reload_scripts();

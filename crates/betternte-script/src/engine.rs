@@ -135,21 +135,6 @@ pub trait ScriptContext: Send + Sync {
     /// Get current actual frame dimensions (width, height).
     fn get_frame_size(&self) -> Option<(u32, u32)> { None }
 
-    /// When false, undeclared manifest permissions log a warning only; when true, abort.
-    fn manifest_security_strict(&self) -> bool {
-        true
-    }
-
-    /// Push manifest permission scope for `ctx.*` bridge checks (paired with [`Self::pop_manifest_permission_scope`]).
-    fn push_manifest_permission_scope(&self, _declared: &[String], _strict: bool) {}
-
-    fn pop_manifest_permission_scope(&self) {}
-
-    /// Enforce manifest permission before executing a bridged `ctx` method (Error string aborts the call).
-    fn check_manifest_api_permission(&self, _method: &str) -> Result<(), String> {
-        Ok(())
-    }
-
     // === 截图 ===
     /// Capture full screen. `force=false` returns cached frame, `true` forces new capture.
     async fn capture(&self, force: bool) -> Result<CaptureFrame>;

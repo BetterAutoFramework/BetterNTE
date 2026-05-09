@@ -962,10 +962,6 @@ async fn dispatch_ctx_method(
     args: &[serde_json::Value],
     job_mgr: &JobManager,
 ) -> std::result::Result<serde_json::Value, String> {
-    if let Err(e) = ctx.check_manifest_api_permission(method) {
-        return Err(e);
-    }
-
     // Helper: template match result → JSON
     let tmpl_to_json = |m: crate::engine::MatchResult| {
         serde_json::json!({"x": m.x, "y": m.y, "width": m.width, "height": m.height, "confidence": m.confidence})

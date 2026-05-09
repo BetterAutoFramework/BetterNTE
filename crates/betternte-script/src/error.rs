@@ -11,9 +11,6 @@ pub enum ScriptError {
     #[error("Version incompatible: script requires {required}, engine is {current}")]
     VersionIncompatible { required: String, current: String },
 
-    #[error("Permission denied: {0}")]
-    PermissionDenied(String),
-
     #[error("Script timeout ({0}ms)")]
     Timeout(u64),
 
@@ -87,12 +84,6 @@ mod tests {
         let s = err.to_string();
         assert!(s.contains(">=1.0.0"));
         assert!(s.contains("0.9.0"));
-    }
-
-    #[test]
-    fn test_display_permission_denied() {
-        let err = ScriptError::PermissionDenied("FileRead".into());
-        assert_eq!(err.to_string(), "Permission denied: FileRead");
     }
 
     #[test]

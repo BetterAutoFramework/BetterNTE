@@ -147,7 +147,7 @@ impl ScriptLoader {
 
     /// Re-read `manifest.json` beside [`ScriptInfo::path`] and update manifest + compatibility.
     ///
-    /// Used when hot-reloading so permission lists (e.g. `color_detect`) edited on disk take effect
+    /// Used when hot-reloading so manifest changes edited on disk take effect
     /// without restarting the engine.
     pub fn refresh_manifest_from_disk(&self, info: &mut ScriptInfo) {
         let manifest_path = info.path.join("manifest.json");

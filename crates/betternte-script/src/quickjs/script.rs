@@ -84,7 +84,6 @@ impl QuickJsScript {
             return Ok(());
         }
 
-        let strict = ctx.manifest_security_strict();
         for dep in &self.manifest.dependencies {
             let lib_root = resolve_dependency_root(&self.data_root, dep)?;
             let lib_manifest = load_and_check_dependency(dep, &lib_root, &self.engine_version)?;
@@ -102,11 +101,8 @@ impl QuickJsScript {
                 )
             })?;
 
-            ctx.push_manifest_permission_scope(&lib_manifest.permissions, strict);
-
             let reset_exports = "globalThis.__libraryExports = {}; globalThis.exports = {};";
             if let Err(e) = js_ctx.eval::<(), _>(reset_exports) {
-                ctx.pop_manifest_permission_scope();
                 let detail = format!("{}", e);
                 self.emit_script_failure(
                     ctx,
@@ -117,7 +113,6 @@ impl QuickJsScript {
             }
 
             if let Err(e) = js_ctx.eval::<(), _>(dep_source.as_str()) {
-                ctx.pop_manifest_permission_scope();
                 let detail = format!("{}", e);
                 self.emit_script_failure(
                     ctx,
@@ -154,7 +149,6 @@ impl QuickJsScript {
                 lib_key = lib_key
             );
             if let Err(e) = js_ctx.eval::<(), _>(assign_ns.as_str()) {
-                ctx.pop_manifest_permission_scope();
                 let detail = format!("{}", e);
                 self.emit_script_failure(
                     ctx,
@@ -168,7 +162,6 @@ impl QuickJsScript {
                 ));
             }
 
-            ctx.pop_manifest_permission_scope();
         }
 
         Ok(())
@@ -229,9 +222,6 @@ impl QuickJsScript {
             *slot = Some(self.cancelled.clone());
         }
 
-        let strict = ctx.manifest_security_strict();
-        ctx.push_manifest_permission_scope(&self.manifest.permissions, strict);
-
         let ctx_for_deps = ctx.clone();
         let ctx_emit = ctx.clone();
         let timeout_duration = std::time::Duration::from_millis(self.max_execution_ms);
@@ -276,8 +266,6 @@ impl QuickJsScript {
             }),
         )
         .await;
-
-        ctx.pop_manifest_permission_scope();
 
         // Mark as initialized only if the outer timeout and inner JS call both succeeded.
         if needs_init && matches!(result, Ok(Ok(_))) {

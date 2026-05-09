@@ -20,22 +20,15 @@ use betternte_core::input::InputController;
 use betternte_core::vision::{ColorDetector, OcrEngine, TemplateMatchParams, TemplateMatcher};
 use betternte_core::ColorTolerance;
 use betternte_core::OcrConfig;
-use betternte_runtime::sandbox::PermissionGuard;
-use betternte_runtime::types::{Permission, Permissions, ScriptManifest, ScriptType};
+use betternte_runtime::types::{ScriptManifest, ScriptType};
 use betternte_script::{
-    color_tolerance_for_match_point, manifest_permission_key_for_ctx_method, CancellationToken,
+    color_tolerance_for_match_point, CancellationToken,
     CaptureFrame, ColorMatchAllOpts, ColorMatchAllResult, ColorMatchPoint, ColorMatchPointResult,
     ColorMatchShift, FindTemplateBatchEntry, FindTemplateOpts, FindTemplateOrderBy, LogLevel,
     MatchResult, OcrResult, Rect, Region, RgbaTolerance, ScriptContext,
 };
 use betternte_vision::TemplateCache;
 use betternte_vision::{apply_text_color_filter, parse_color_str};
-
-#[derive(Clone)]
-struct ManifestPermScope {
-    declared: HashSet<String>,
-    strict: bool,
-}
 
 #[derive(Clone)]
 pub struct SharedFrameSnapshot {
@@ -102,7 +95,6 @@ pub struct EngineScriptContext {
     capture_engine: tokio::sync::Mutex<Option<Box<dyn ScreenCapture>>>,
     capture_started_hwnd: std::sync::Mutex<Option<u64>>,
     input_controller: tokio::sync::Mutex<Option<Box<dyn InputController>>>,
-    permissions: PermissionGuard,
     capture_config: std::sync::Mutex<CaptureConfig>,
     ocr_config: std::sync::Mutex<OcrConfig>,
     shared_frame: tokio::sync::RwLock<Option<SharedFrameSnapshot>>,
@@ -169,9 +161,6 @@ pub struct EngineScriptContext {
         >,
     >,
 
-    manifest_perm_stack: std::sync::Mutex<Vec<ManifestPermScope>>,
-    manifest_security_strict: AtomicBool,
-
     // Resolution scaling: design [w, h] from manifest.json. None = no scaling.
     design_resolution: std::sync::Mutex<Option<(u32, u32)>>,
 }
@@ -195,16 +184,10 @@ impl EngineScriptContext {
             author: String::new(),
             description: String::new(),
             dependencies: vec![],
-            permissions: Permissions {
-                required: vec![],
-                optional: vec![],
-            },
             params_schema: None,
             output_schema: None,
             tags: vec![],
         };
-        let permissions = PermissionGuard::new(&manifest, "system");
-
         Self {
             config,
             cancel: CancellationToken::new(),
@@ -212,7 +195,6 @@ impl EngineScriptContext {
             capture_engine: tokio::sync::Mutex::new(None),
             capture_started_hwnd: std::sync::Mutex::new(None),
             input_controller: tokio::sync::Mutex::new(None),
-            permissions,
             capture_config: std::sync::Mutex::new(CaptureConfig::default()),
             ocr_config: std::sync::Mutex::new(OcrConfig::default()),
             shared_frame: tokio::sync::RwLock::new(None),
@@ -237,8 +219,6 @@ impl EngineScriptContext {
             template_file_cache: Arc::new(TemplateCache::new(64)),
             script_runner: std::sync::Mutex::new(None),
             library_runner: std::sync::Mutex::new(None),
-            manifest_perm_stack: std::sync::Mutex::new(Vec::new()),
-            manifest_security_strict: AtomicBool::new(true),
             design_resolution: std::sync::Mutex::new(None),
         }
     }
@@ -253,12 +233,6 @@ impl EngineScriptContext {
 
     pub fn cancel_token(&self) -> &CancellationToken {
         &self.cancel
-    }
-
-    /// From engine config: strict = abort on missing manifest permissions; normal = warn only.
-    pub fn set_manifest_security_strict(&self, strict: bool) {
-        self.manifest_security_strict
-            .store(strict, Ordering::Relaxed);
     }
 
     pub async fn set_input_controller(&self, controller: Box<dyn InputController>) {
@@ -1197,59 +1171,6 @@ impl ScriptContext for EngineScriptContext {
 
     fn get_config(&self) -> &serde_json::Value {
         &self.config
-    }
-
-    fn manifest_security_strict(&self) -> bool {
-        self.manifest_security_strict.load(Ordering::Relaxed)
-    }
-
-    fn push_manifest_permission_scope(&self, declared: &[String], strict: bool) {
-        let declared: HashSet<String> = declared.iter().map(|s| s.to_ascii_lowercase()).collect();
-        self.manifest_perm_stack
-            .lock()
-            .expect("manifest_perm_stack")
-            .push(ManifestPermScope { declared, strict });
-    }
-
-    fn pop_manifest_permission_scope(&self) {
-        let mut g = self
-            .manifest_perm_stack
-            .lock()
-            .expect("manifest_perm_stack");
-        let _ = g.pop();
-    }
-
-    fn check_manifest_api_permission(&self, method: &str) -> Result<(), String> {
-        let Some(key) = manifest_permission_key_for_ctx_method(method) else {
-            return Ok(());
-        };
-        let scope = self
-            .manifest_perm_stack
-            .lock()
-            .expect("manifest_perm_stack")
-            .last()
-            .cloned();
-        let Some(scope) = scope else {
-            return Ok(());
-        };
-        if scope.declared.contains(key) {
-            return Ok(());
-        }
-        let msg = format!(
-            "Manifest permission denied: ctx method '{}' requires '{}' (not declared in manifest)",
-            method, key
-        );
-        if scope.strict {
-            tracing::error!(target: "betternte", "{}", msg);
-            self.log(LogLevel::Error, &msg);
-            self.request_cancel();
-            Err(msg)
-        } else {
-            // TODO: 暂时关闭权限 WARN 日志，后续再打开
-            // tracing::warn!(target: "betternte", "{}", msg);
-            // self.log(LogLevel::Warn, &msg);
-            Ok(())
-        }
     }
 
     fn progress(&self, current: u32, total: u32) {
@@ -2605,9 +2526,6 @@ impl ScriptContext for EngineScriptContext {
     }
 
     async fn notify(&self, title: &str, body: &str) -> Result<()> {
-        self.permissions
-            .check(&Permission::Notify)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         let mgr = self.notification_manager.read().await;
         if !mgr.is_enabled() {
             info!(title, "Notifications globally disabled; drop");
@@ -2654,29 +2572,14 @@ impl ScriptContext for EngineScriptContext {
 
     // === File operations (system-level, permission-gated) ===
     async fn read_file(&self, path: &str) -> Result<String> {
-        self.permissions
-            .check(&Permission::FileRead {
-                paths: vec![path.to_string()],
-            })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         tokio::fs::read_to_string(path).await.map_err(|e| e.into())
     }
 
     async fn write_file(&self, path: &str, content: &str) -> Result<()> {
-        self.permissions
-            .check(&Permission::FileWrite {
-                paths: vec![path.to_string()],
-            })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         tokio::fs::write(path, content).await.map_err(|e| e.into())
     }
 
     async fn list_files(&self, dir: &str) -> Result<Vec<String>> {
-        self.permissions
-            .check(&Permission::FileRead {
-                paths: vec![dir.to_string()],
-            })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         let mut entries = Vec::new();
         let mut dir_entries = tokio::fs::read_dir(dir).await?;
         while let Some(entry) = dir_entries.next_entry().await? {
@@ -2688,19 +2591,11 @@ impl ScriptContext for EngineScriptContext {
     }
 
     async fn file_exists(&self, path: &str) -> Result<bool> {
-        self.permissions
-            .check(&Permission::FileRead {
-                paths: vec![path.to_string()],
-            })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(tokio::fs::metadata(path).await.is_ok())
     }
 
     // === Network ===
     async fn http_get(&self, url: &str) -> Result<String> {
-        self.permissions
-            .check(&Permission::Network { domains: vec![] })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         let client = reqwest::Client::new();
         let resp = client.get(url).send().await?;
         let body = resp.text().await?;
@@ -2708,9 +2603,6 @@ impl ScriptContext for EngineScriptContext {
     }
 
     async fn http_post(&self, url: &str, body: &str) -> Result<String> {
-        self.permissions
-            .check(&Permission::Network { domains: vec![] })
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
         let client = reqwest::Client::new();
         let resp = client
             .post(url)

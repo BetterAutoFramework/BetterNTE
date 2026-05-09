@@ -264,7 +264,7 @@ Unified flow execution engine based on the Flow / Step / Transition model:
 - `Condition` — Condition enum (Always, Template, Ocr, Color, Variable, Hotkey, Script, And/Or/Not)
 - `FlowExecutor` — Executor main loop
 - `VariableStore` — Two-layer variable system (default values + persistence), supports reference resolution (`$variables.x`, `$result.y`)
-- `PermissionGuard` — Manifest-based permission sandbox
+- `PermissionGuard` — Manifest-based permission sandbox (removed)
 
 ---
 

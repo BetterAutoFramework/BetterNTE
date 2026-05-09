@@ -21,7 +21,7 @@ pub use config::{
     AdbConfig, AdvancedConfig, ApiConfig, BarkConfig, CaptureConfig, DiscordConfig, EmulatorConfig,
     EngineConfig, GameConfig, HardwareAcceleration, HotkeyConfig, HotkeyTriggersConfig,
     KeyBindingsConfig, NotificationConfig, NotificationLevel, OcrEngineType, OverlayConfig,
-    OverlayMode, ScriptConfig, SecurityConfig, SecurityMode, ServerChanConfig, Subscription,
+    OverlayMode, ScriptConfig, ServerChanConfig, Subscription,
     TelegramConfig,
 };
 pub use consts::*;

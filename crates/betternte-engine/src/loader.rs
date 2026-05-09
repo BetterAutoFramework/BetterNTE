@@ -59,7 +59,6 @@ pub struct ScriptManifest {
     pub author: String,
     pub description: String,
     pub tags: Vec<String>,
-    pub permissions: Vec<String>,
     pub params_schema: Option<serde_json::Value>,
     /// 脚本输出的 JSON Schema（用于 Flow 中下游步骤引用）。
     pub output_schema: Option<serde_json::Value>,
@@ -90,8 +89,6 @@ struct RawManifest {
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
-    permissions: FlexiblePermissions,
-    #[serde(default)]
     params_schema: Option<serde_json::Value>,
     #[serde(default)]
     output_schema: Option<serde_json::Value>,
@@ -101,61 +98,6 @@ struct RawManifest {
     category: Option<String>,
     #[serde(default)]
     min_engine_version: Option<String>,
-}
-
-/// 灵活权限反序列化 — 接受字符串数组或对象格式。
-#[derive(Debug, Clone, Default)]
-struct FlexiblePermissions(Vec<String>);
-
-impl<'de> Deserialize<'de> for FlexiblePermissions {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de;
-
-        struct Visitor;
-
-        impl<'de> de::Visitor<'de> for Visitor {
-            type Value = FlexiblePermissions;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a list of permission strings or a permissions object")
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: de::SeqAccess<'de>,
-            {
-                let mut perms = Vec::new();
-                while let Some(val) = seq.next_element::<String>()? {
-                    perms.push(val);
-                }
-                Ok(FlexiblePermissions(perms))
-            }
-
-            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
-            where
-                M: de::MapAccess<'de>,
-            {
-                let mut all = Vec::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "required" | "optional" => {
-                            let vals: Vec<String> = map.next_value()?;
-                            all.extend(vals);
-                        }
-                        _ => {
-                            let _ = map.next_value::<serde_json::Value>()?;
-                        }
-                    }
-                }
-                Ok(FlexiblePermissions(all))
-            }
-        }
-
-        deserializer.deserialize_any(Visitor)
-    }
 }
 
 impl From<RawManifest> for ScriptManifest {
@@ -171,7 +113,6 @@ impl From<RawManifest> for ScriptManifest {
             author: raw.author,
             description: raw.description,
             tags: raw.tags,
-            permissions: raw.permissions.0,
             params_schema: raw.params_schema,
             output_schema: raw.output_schema,
             visibility: raw.visibility,
@@ -302,7 +243,6 @@ mod tests {
         let manifest: ScriptManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.name, "auto_pick");
         assert_eq!(manifest.script_type, ScriptType::Trigger);
-        assert_eq!(manifest.permissions, vec!["screenshot", "click"]);
         assert!(manifest.params_schema.is_some());
     }
 
@@ -320,20 +260,5 @@ mod tests {
         let manifest: ScriptManifest = serde_json::from_str(json).unwrap();
         assert_eq!(manifest.script_type, ScriptType::Task);
     }
-
-    #[test]
-    fn test_parse_object_permissions() {
-        let json = r#"{
-            "schema_version": 1,
-            "name": "test",
-            "display_name": "Test",
-            "version": "1.0.0",
-            "type": "task",
-            "entry": "main.js",
-            "permissions": { "required": ["capture", "input"], "optional": ["network"] }
-        }"#;
-
-        let manifest: ScriptManifest = serde_json::from_str(json).unwrap();
-        assert_eq!(manifest.permissions, vec!["capture", "input", "network"]);
     }
 }

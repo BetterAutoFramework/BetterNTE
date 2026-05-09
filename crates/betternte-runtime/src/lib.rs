@@ -17,7 +17,6 @@ pub mod executor;
 pub mod parser;
 mod perf_log;
 pub mod pipeline_tools;
-pub mod sandbox;
 pub mod step_handlers;
 pub mod trigger;
 pub mod types;
@@ -35,7 +34,6 @@ pub use parser::FlowParser;
 pub use pipeline_tools::{
     check_pipeline_file, dump_pipeline_file, PipelineCheckReport, PipelineDump, PipelineSourceKind,
 };
-pub use sandbox::PermissionGuard;
 pub use step_handlers::{StepContext, StepHandler, StepRegistry};
 pub use trigger::TriggerManager;
 pub use types::*;

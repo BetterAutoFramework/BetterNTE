@@ -203,22 +203,6 @@ impl ScriptContext for DebugScriptContext {
         self.inner.get_frame_size()
     }
 
-    fn manifest_security_strict(&self) -> bool {
-        self.inner.manifest_security_strict()
-    }
-
-    fn push_manifest_permission_scope(&self, declared: &[String], strict: bool) {
-        self.inner.push_manifest_permission_scope(declared, strict);
-    }
-
-    fn pop_manifest_permission_scope(&self) {
-        self.inner.pop_manifest_permission_scope();
-    }
-
-    fn check_manifest_api_permission(&self, method: &str) -> Result<(), String> {
-        self.inner.check_manifest_api_permission(method)
-    }
-
     // === Capture ===
 
     async fn capture(&self, force: bool) -> Result<CaptureFrame> {

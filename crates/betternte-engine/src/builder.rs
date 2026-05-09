@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use betternte_core::config::SecurityMode;
 use betternte_core::vision::TemplateMatcher;
 use betternte_core::{EngineConfig, OcrConfig};
 use betternte_runtime::{ConditionHandler, InputRunner, StepHandler};
@@ -141,7 +140,6 @@ impl EngineBuilder {
         ctx.set_notification_manager(crate::notify_builder::build_notification_manager(
             &config.notifications,
         ));
-        ctx.set_manifest_security_strict(matches!(config.security.mode, SecurityMode::Strict));
         let ctx = Arc::new(ctx);
 
         // Wire up script_runner so ctx.runScript() works
