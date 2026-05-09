@@ -123,7 +123,7 @@ pub struct EngineScriptContext {
     fps: AtomicU32, // stored as fixed-point: fps * 100
 
     // Notification — always present; disabled / empty by default, swappable at runtime.
-    notification_manager: Arc<tokio::sync::RwLock<betternte_notify::NotificationManager>>,
+    notification_manager: Arc<tokio::sync::RwLock<betternte_core::NotificationManager>>,
 
     // Storage (manifest-scoped)
     storage_path: PathBuf,
@@ -229,7 +229,7 @@ impl EngineScriptContext {
             frame_number: AtomicU64::new(0),
             fps: AtomicU32::new(0),
             notification_manager: Arc::new(tokio::sync::RwLock::new({
-                let mut mgr = betternte_notify::NotificationManager::new();
+                let mut mgr = betternte_core::NotificationManager::new();
                 mgr.set_enabled(false);
                 mgr
             })),
@@ -331,12 +331,12 @@ impl EngineScriptContext {
     }
 
     /// Builder-time notifier injection (before the context is wrapped in `Arc`).
-    pub fn set_notification_manager(&mut self, mgr: betternte_notify::NotificationManager) {
+    pub fn set_notification_manager(&mut self, mgr: betternte_core::NotificationManager) {
         self.notification_manager = Arc::new(tokio::sync::RwLock::new(mgr));
     }
 
     /// Runtime notifier swap (e.g. from [`crate::Engine::set_config`]).
-    pub async fn replace_notification_manager(&self, mgr: betternte_notify::NotificationManager) {
+    pub async fn replace_notification_manager(&self, mgr: betternte_core::NotificationManager) {
         *self.notification_manager.write().await = mgr;
     }
 

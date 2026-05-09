@@ -141,7 +141,7 @@ impl EngineBuilder {
             ));
         ctx.set_ocr_engine(ocr_engine);
         ctx.set_event_bus(event_bus.clone());
-        ctx.set_notification_manager(crate::notify_builder::build_notification_manager(
+        ctx.set_notification_manager(betternte_notify::create_notification_manager(
             &config.notifications,
         ));
         ctx.set_manifest_security_strict(matches!(config.security.mode, SecurityMode::Strict));

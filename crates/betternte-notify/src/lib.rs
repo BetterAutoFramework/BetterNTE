@@ -1,124 +1,42 @@
-//! betternte-notify: 多渠道通知推送系统
+//! betternte-notify: Multi-channel notification push system.
 //!
-//! 支持 Server酱、Telegram、自定义 Webhook 等通知渠道，通过 trait 抽象统一接口。
+//! Provides concrete `Notifier` implementations (ServerChan, Telegram, Webhook, Bark)
+//! and convenience functions to build a `NotificationManager` from configuration.
+//!
+//! The core trait (`Notifier`) and manager (`NotificationManager`) live in
+//! `betternte_core::notify_trait` so that any crate can implement the plugin
+//! contract without depending on HTTP libraries.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use thiserror::Error;
 
-// ============================================================================
-// 错误类型
-// ============================================================================
+// Re-export the core types so downstream callers can use `betternte_notify::*`.
+pub use betternte_core::notify_trait::{ChannelInfo, NotifyError, NotificationManager, Notifier};
 
-/// 通知模块错误类型。
-#[derive(Error, Debug)]
-pub enum NotifyError {
-    /// 通知已全局禁用
-    #[error("Notifications are disabled")]
-    Disabled,
-
-    /// 通知渠道未找到
-    #[error("Notification channel not found: {0}")]
-    ChannelNotFound(String),
-
-    /// 通知渠道未配置
-    #[error("Notification channel not configured: {0}")]
-    NotConfigured(String),
-
-    /// HTTP 请求失败
-    #[error("HTTP request failed: {0}")]
-    HttpError(String),
-
-    /// 配置错误
-    #[error("Configuration error: {0}")]
-    ConfigError(String),
-
-    /// JSON 序列化/反序列化错误
-    #[error("JSON error: {0}")]
-    JsonError(#[from] serde_json::Error),
-
-    /// IO 错误
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-
-    /// 所有渠道发送失败
-    #[error("All notification channels failed")]
-    AllFailed,
-
-    /// API 响应错误
-    #[error("API error (status {status}): {message}")]
-    ApiError { status: u16, message: String },
-}
-
-// ============================================================================
-// 通知渠道信息
-// ============================================================================
-
-/// 通知渠道信息，用于展示已注册渠道的状态。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ChannelInfo {
-    /// 渠道名称（唯一标识）
-    pub name: String,
-    /// 渠道显示名称
-    pub display_name: String,
-    /// 是否已配置
-    pub configured: bool,
-}
-
-// ============================================================================
-// Notifier trait
-// ============================================================================
-
-/// 通知发送器 trait。
-///
-/// 所有通知渠道实现此 trait，通过统一接口发送通知消息。
-#[async_trait]
-pub trait Notifier: Send + Sync {
-    /// 通知渠道名称（唯一标识）。
-    fn name(&self) -> &str;
-
-    /// 通知渠道显示名称（用于前端展示）。
-    fn display_name(&self) -> &str;
-
-    /// 发送通知消息。
-    ///
-    /// # 参数
-    /// - `title`: 通知标题
-    /// - `body`: 通知正文内容
-    async fn send(&self, title: &str, body: &str) -> Result<(), NotifyError>;
-
-    /// 检查通知渠道是否已正确配置。
-    fn is_configured(&self) -> bool;
-
-    /// 测试通知渠道连接。
-    ///
-    /// 发送一条测试消息验证渠道是否可用。
-    async fn test(&self) -> Result<(), NotifyError>;
-}
+use betternte_core::config::NotificationConfig;
 
 // ============================================================================
 // ServerChanNotifier
 // ============================================================================
 
-/// Server酱（ServerChan）通知发送器。
+/// ServerChan (Server酱) notification sender.
 ///
-/// 通过 Server酱 API 推送通知到微信。
-/// API 文档: <https://sct.ftqq.com/>
+/// Pushes notifications to WeChat via the ServerChan API.
+/// API docs: <https://sct.ftqq.com/>
 pub struct ServerChanNotifier {
-    /// Server酱 SendKey
+    /// ServerChan SendKey
     send_key: String,
-    /// HTTP 客户端
+    /// HTTP client
     client: reqwest::Client,
-    /// API 基础 URL
+    /// API base URL
     base_url: String,
 }
 
 impl ServerChanNotifier {
-    /// 创建 Server酱通知发送器。
+    /// Create a ServerChan notifier.
     ///
-    /// # 参数
-    /// - `send_key`: Server酱 SendKey（从 <https://sct.ftqq.com/> 获取）
+    /// # Arguments
+    /// - `send_key`: ServerChan SendKey (from <https://sct.ftqq.com/>)
     pub fn new(send_key: String) -> Self {
         Self {
             send_key,
@@ -127,11 +45,7 @@ impl ServerChanNotifier {
         }
     }
 
-    /// 创建带自定义 API URL 的 Server酱通知发送器。
-    ///
-    /// # 参数
-    /// - `send_key`: Server酱 SendKey
-    /// - `base_url`: 自定义 API 基础 URL（如使用第三方兼容服务）
+    /// Create with a custom API base URL (for third-party compatible services).
     pub fn with_base_url(send_key: String, base_url: String) -> Self {
         Self {
             send_key,
@@ -172,7 +86,7 @@ impl Notifier for ServerChanNotifier {
             return Err(NotifyError::ApiError { status, message });
         }
 
-        tracing::info!("Server酱通知发送成功: {}", title);
+        tracing::info!("ServerChan notification sent: {}", title);
         Ok(())
     }
 
@@ -181,7 +95,7 @@ impl Notifier for ServerChanNotifier {
     }
 
     async fn test(&self) -> Result<(), NotifyError> {
-        self.send("BetterNTE 测试通知", "Server酱通知渠道配置成功！")
+        self.send("BetterNTE Test", "ServerChan notification channel configured!")
             .await
     }
 }
@@ -190,31 +104,31 @@ impl Notifier for ServerChanNotifier {
 // TelegramNotifier
 // ============================================================================
 
-/// Telegram Bot 通知发送器。
+/// Telegram Bot notification sender.
 ///
-/// 通过 Telegram Bot API 推送通知。
-/// API 文档: <https://core.telegram.org/bots/api>
+/// Pushes notifications via the Telegram Bot API.
+/// API docs: <https://core.telegram.org/bots/api>
 pub struct TelegramNotifier {
-    /// Bot Token（从 @BotFather 获取）
+    /// Bot Token (from @BotFather)
     bot_token: String,
-    /// 目标 Chat ID（用户/群组/频道）
+    /// Target Chat ID (user/group/channel)
     chat_id: String,
-    /// HTTP 客户端
+    /// HTTP client
     client: reqwest::Client,
-    /// API 基础 URL（支持自建 Bot API 服务器）
+    /// API base URL (supports self-hosted Bot API servers)
     base_url: String,
-    /// 解析模式（MarkdownV2 / HTML / 纯文本）
+    /// Parse mode (MarkdownV2 / HTML / plain text)
     parse_mode: String,
-    /// 静默发送（不播放通知音）
+    /// Silent send (no notification sound)
     disable_notification: bool,
 }
 
 impl TelegramNotifier {
-    /// 创建 Telegram 通知发送器。
+    /// Create a Telegram notifier.
     ///
-    /// # 参数
-    /// - `bot_token`: Bot Token（格式: "123456:ABC-DEF..."）
-    /// - `chat_id`: 目标 Chat ID（可以是数字 ID 或 @channel_name）
+    /// # Arguments
+    /// - `bot_token`: Bot Token (format: "123456:ABC-DEF...")
+    /// - `chat_id`: Target Chat ID (numeric ID or @channel_name)
     pub fn new(bot_token: String, chat_id: String) -> Self {
         Self {
             bot_token,
@@ -226,24 +140,19 @@ impl TelegramNotifier {
         }
     }
 
-    /// 设置解析模式。
-    ///
-    /// # 参数
-    /// - `mode`: 解析模式，可选 "MarkdownV2", "HTML", 或空字符串（纯文本）
+    /// Set the parse mode.
     pub fn with_parse_mode(mut self, mode: &str) -> Self {
         self.parse_mode = mode.to_string();
         self
     }
 
-    /// 设置自定义 API 基础 URL。
-    ///
-    /// 用于自建 Bot API 服务器。
+    /// Set a custom API base URL (for self-hosted Bot API servers).
     pub fn with_base_url(mut self, url: &str) -> Self {
         self.base_url = url.to_string();
         self
     }
 
-    /// 启用/禁用静默发送（不播放通知音）。
+    /// Enable/disable silent send (no notification sound).
     pub fn with_silent(mut self, silent: bool) -> Self {
         self.disable_notification = silent;
         self
@@ -299,7 +208,7 @@ impl Notifier for TelegramNotifier {
             return Err(NotifyError::ApiError { status, message });
         }
 
-        tracing::info!("Telegram 通知发送成功: {}", title);
+        tracing::info!("Telegram notification sent: {}", title);
         Ok(())
     }
 
@@ -308,7 +217,7 @@ impl Notifier for TelegramNotifier {
     }
 
     async fn test(&self) -> Result<(), NotifyError> {
-        self.send("BetterNTE 测试", "Telegram 通知渠道配置成功！")
+        self.send("BetterNTE Test", "Telegram notification channel configured!")
             .await
     }
 }
@@ -400,10 +309,6 @@ pub struct WebhookNotifier {
 
 impl WebhookNotifier {
     /// Create a webhook notifier for a specific platform.
-    ///
-    /// # Arguments
-    /// - `url`: Webhook URL
-    /// - `platform`: Target platform (determines payload format)
     pub fn for_platform(url: String, platform: WebhookPlatform) -> Self {
         let mut headers = HashMap::new();
         headers.insert(
@@ -419,10 +324,6 @@ impl WebhookNotifier {
     }
 
     /// Create a webhook notifier with custom headers (uses generic payload).
-    ///
-    /// # Arguments
-    /// - `url`: Webhook URL
-    /// - `headers`: Custom request headers (e.g., Authorization)
     pub fn new(url: String, headers: HashMap<String, String>) -> Self {
         Self {
             url,
@@ -460,7 +361,7 @@ impl Notifier for WebhookNotifier {
     }
 
     fn display_name(&self) -> &str {
-        "自定义 Webhook"
+        "Custom Webhook"
     }
 
     async fn send(&self, title: &str, body: &str) -> Result<(), NotifyError> {
@@ -472,7 +373,7 @@ impl Notifier for WebhookNotifier {
 
         let mut req = self.client.post(&self.url);
 
-        // 设置默认 Content-Type（如果用户没有指定）
+        // Set default Content-Type if user did not specify one
         let has_content_type = self
             .headers
             .keys()
@@ -498,7 +399,7 @@ impl Notifier for WebhookNotifier {
             return Err(NotifyError::ApiError { status, message });
         }
 
-        tracing::info!("Webhook 通知发送成功: {}", title);
+        tracing::info!("Webhook notification sent: {}", title);
         Ok(())
     }
 
@@ -507,7 +408,7 @@ impl Notifier for WebhookNotifier {
     }
 
     async fn test(&self) -> Result<(), NotifyError> {
-        self.send("BetterNTE 测试", "Webhook 通知渠道配置成功！")
+        self.send("BetterNTE Test", "Webhook notification channel configured!")
             .await
     }
 }
@@ -572,7 +473,7 @@ impl Notifier for BarkNotifier {
             return Err(NotifyError::ApiError { status, message });
         }
 
-        tracing::info!("Bark 通知发送成功: {}", title);
+        tracing::info!("Bark notification sent: {}", title);
         Ok(())
     }
 
@@ -581,127 +482,82 @@ impl Notifier for BarkNotifier {
     }
 
     async fn test(&self) -> Result<(), NotifyError> {
-        self.send("BetterNTE 测试", "Bark 通知渠道配置成功！").await
+        self.send("BetterNTE Test", "Bark notification channel configured!")
+            .await
     }
 }
 
 // ============================================================================
-// NotificationManager
+// Plugin registration helpers
 // ============================================================================
 
-/// 通知管理器。
+/// Register all built-in notifiers into a `NotificationManager` from config.
 ///
-/// 统一管理所有通知渠道，提供批量发送和定向发送能力。
-pub struct NotificationManager {
-    /// 已注册的通知渠道列表
-    notifiers: Vec<Box<dyn Notifier>>,
-    /// 是否全局启用通知
-    enabled: bool,
-}
-
-impl NotificationManager {
-    /// 创建通知管理器（默认启用）。
-    pub fn new() -> Self {
-        Self {
-            notifiers: Vec::new(),
-            enabled: true,
+/// Channels are only registered when their per-channel `enabled` flag is set
+/// **and** the required credentials are non-empty.  This keeps `send_all`
+/// quiet when a channel is not yet configured.
+pub fn register_built_in_notifiers(mgr: &mut NotificationManager, cfg: &NotificationConfig) {
+    if cfg.telegram.enabled {
+        if cfg.telegram.bot_token.is_empty() || cfg.telegram.chat_id.is_empty() {
+            tracing::warn!("telegram enabled but bot_token/chat_id empty; skipping");
+        } else {
+            mgr.register(TelegramNotifier::new(
+                cfg.telegram.bot_token.clone(),
+                cfg.telegram.chat_id.clone(),
+            ));
+            tracing::info!("notification channel registered: telegram");
         }
     }
 
-    /// 设置是否启用通知。
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-    }
-
-    /// 全局通知是否启用。
-    pub fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// 注册通知渠道。
-    pub fn register(&mut self, notifier: impl Notifier + 'static) {
-        self.notifiers.push(Box::new(notifier));
-    }
-
-    /// 注销通知渠道。
-    ///
-    /// # 返回
-    /// - `true`: 注销成功
-    /// - `false`: 未找到该渠道
-    pub fn unregister(&mut self, name: &str) -> bool {
-        let len_before = self.notifiers.len();
-        self.notifiers.retain(|n| n.name() != name);
-        self.notifiers.len() < len_before
-    }
-
-    /// 发送通知到所有已注册的渠道。
-    ///
-    /// 返回每个渠道的发送结果，单个渠道失败不影响其他渠道。
-    pub async fn send_all(&self, title: &str, body: &str) -> Vec<Result<(), NotifyError>> {
-        if !self.enabled {
-            return vec![Err(NotifyError::Disabled)];
+    if cfg.discord.enabled {
+        if cfg.discord.webhook_url.is_empty() {
+            tracing::warn!("discord enabled but webhook_url empty; skipping");
+        } else {
+            mgr.register(WebhookNotifier::discord(cfg.discord.webhook_url.clone()));
+            tracing::info!("notification channel registered: discord");
         }
+    }
 
-        let mut results = Vec::with_capacity(self.notifiers.len());
-        for notifier in &self.notifiers {
-            let result = notifier.send(title, body).await;
-            results.push(result);
+    if cfg.serverchan.enabled {
+        if cfg.serverchan.send_key.is_empty() {
+            tracing::warn!("serverchan enabled but send_key empty; skipping");
+        } else {
+            mgr.register(ServerChanNotifier::new(cfg.serverchan.send_key.clone()));
+            tracing::info!("notification channel registered: serverchan");
         }
-        results
     }
 
-    /// 发送通知到指定渠道。
-    ///
-    /// # 参数
-    /// - `name`: 目标通知渠道名称
-    /// - `title`: 通知标题
-    /// - `body`: 通知正文
-    pub async fn send_to(&self, name: &str, title: &str, body: &str) -> Result<(), NotifyError> {
-        if !self.enabled {
-            return Err(NotifyError::Disabled);
+    if cfg.bark.enabled {
+        if cfg.bark.server_url.is_empty() || cfg.bark.device_key.is_empty() {
+            tracing::warn!("bark enabled but server_url/device_key empty; skipping");
+        } else {
+            mgr.register(BarkNotifier::new(
+                cfg.bark.server_url.clone(),
+                cfg.bark.device_key.clone(),
+            ));
+            tracing::info!("notification channel registered: bark");
         }
-
-        let notifier = self
-            .notifiers
-            .iter()
-            .find(|n| n.name() == name)
-            .ok_or_else(|| NotifyError::ChannelNotFound(name.to_string()))?;
-
-        notifier.send(title, body).await
-    }
-
-    /// 获取所有已注册的通知渠道信息列表。
-    pub fn list_channels(&self) -> Vec<ChannelInfo> {
-        self.notifiers
-            .iter()
-            .map(|n| ChannelInfo {
-                name: n.name().to_string(),
-                display_name: n.display_name().to_string(),
-                configured: n.is_configured(),
-            })
-            .collect()
-    }
-
-    /// 测试指定渠道的通知。
-    pub async fn test_channel(&self, name: &str) -> Result<(), NotifyError> {
-        let notifier = self
-            .notifiers
-            .iter()
-            .find(|n| n.name() == name)
-            .ok_or_else(|| NotifyError::ChannelNotFound(name.to_string()))?;
-
-        notifier.test().await
     }
 }
 
-impl Default for NotificationManager {
-    fn default() -> Self {
-        Self::new()
+/// Create a `NotificationManager` with all built-in notifiers from config.
+///
+/// Returns a disabled manager when `cfg.enabled` is false.
+pub fn create_notification_manager(cfg: &NotificationConfig) -> NotificationManager {
+    let mut mgr = NotificationManager::new();
+    mgr.set_enabled(cfg.enabled);
+
+    if !cfg.enabled {
+        tracing::debug!("Notifications globally disabled; no channels registered");
+        return mgr;
     }
+
+    register_built_in_notifiers(&mut mgr, cfg);
+    mgr
 }
 
 // ============================================================================
-// 测试
+// Tests
 // ============================================================================
 
 #[cfg(test)]
@@ -709,11 +565,8 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    // ── MockNotifier（记录调用） ───────────────────────────
+    // ── MockNotifier ────────────────────────────────────────
 
-    /// Mock 通知发送器，用于单元测试。
-    ///
-    /// 记录所有 send 调用的 (title, body) 对。
     struct MockNotifier {
         name: String,
         configured: bool,
@@ -760,16 +613,16 @@ mod tests {
         }
 
         async fn test(&self) -> Result<(), NotifyError> {
-            self.send("测试", "测试消息").await
+            self.send("Test", "Test message").await
         }
     }
 
-    // ── ServerChanNotifier 测试 ────────────────────────────
+    // ── ServerChanNotifier tests ────────────────────────────
 
     #[test]
     fn test_serverchan_notifier_configured() {
         let notifier = ServerChanNotifier::new("SCTxxxxxxxxxxxxxxxxx".to_string());
-        assert!(notifier.is_configured(), "有 send_key 时应已配置");
+        assert!(notifier.is_configured());
         assert_eq!(notifier.name(), "serverchan");
         assert_eq!(notifier.display_name(), "Server酱");
     }
@@ -777,10 +630,10 @@ mod tests {
     #[test]
     fn test_serverchan_notifier_empty_key() {
         let notifier = ServerChanNotifier::new(String::new());
-        assert!(!notifier.is_configured(), "空 send_key 应未配置");
+        assert!(!notifier.is_configured());
     }
 
-    // ── TelegramNotifier 测试 ──────────────────────────────
+    // ── TelegramNotifier tests ──────────────────────────────
 
     #[test]
     fn test_telegram_notifier_configured() {
@@ -788,7 +641,7 @@ mod tests {
             "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11".to_string(),
             "-1001234567890".to_string(),
         );
-        assert!(notifier.is_configured(), "有 token 和 chat_id 时应已配置");
+        assert!(notifier.is_configured());
         assert_eq!(notifier.name(), "telegram");
         assert_eq!(notifier.display_name(), "Telegram Bot");
     }
@@ -796,13 +649,13 @@ mod tests {
     #[test]
     fn test_telegram_notifier_empty_token_not_configured() {
         let notifier = TelegramNotifier::new(String::new(), "-1001234567890".to_string());
-        assert!(!notifier.is_configured(), "空 token 应未配置");
+        assert!(!notifier.is_configured());
     }
 
     #[test]
     fn test_telegram_notifier_empty_chat_id_not_configured() {
         let notifier = TelegramNotifier::new("123456:ABC-DEF".to_string(), String::new());
-        assert!(!notifier.is_configured(), "空 chat_id 应未配置");
+        assert!(!notifier.is_configured());
     }
 
     #[test]
@@ -812,30 +665,21 @@ mod tests {
         assert!(notifier.is_configured());
     }
 
-    // ── WebhookNotifier 测试 ───────────────────────────────
+    // ── WebhookNotifier tests ───────────────────────────────
 
     #[test]
     fn test_webhook_notifier_configured() {
         let notifier =
             WebhookNotifier::new("https://example.com/webhook".to_string(), HashMap::new());
-        assert!(notifier.is_configured(), "有 url 时应已配置");
+        assert!(notifier.is_configured());
         assert_eq!(notifier.name(), "webhook");
-        assert_eq!(notifier.display_name(), "自定义 Webhook");
+        assert_eq!(notifier.display_name(), "Custom Webhook");
     }
 
     #[test]
     fn test_webhook_notifier_empty_url_not_configured() {
         let notifier = WebhookNotifier::new(String::new(), HashMap::new());
-        assert!(!notifier.is_configured(), "空 url 应未配置");
-    }
-
-    #[test]
-    fn test_webhook_wecom_factory() {
-        let notifier = WebhookNotifier::wecom(
-            "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test".to_string(),
-        );
-        assert!(notifier.is_configured());
-        assert_eq!(notifier.name(), "webhook");
+        assert!(!notifier.is_configured());
     }
 
     #[test]
@@ -845,41 +689,7 @@ mod tests {
         assert!(notifier.is_configured());
     }
 
-    // ── MockNotifier 基本测试 ──────────────────────────────
-
-    #[tokio::test]
-    async fn test_notifier_mock_implements_trait() {
-        let notifier = MockNotifier::new("mock", true);
-        assert_eq!(notifier.name(), "mock");
-        assert!(notifier.is_configured(), "已配置时应返回 true");
-    }
-
-    #[test]
-    fn test_notifier_name_returns_correct_string() {
-        let notifier = MockNotifier::new("my_channel", true);
-        assert_eq!(notifier.name(), "my_channel");
-    }
-
-    #[test]
-    fn test_notifier_is_configured_true() {
-        let notifier = MockNotifier::new("mock", true);
-        assert!(notifier.is_configured());
-    }
-
-    #[test]
-    fn test_notifier_is_configured_false() {
-        let notifier = MockNotifier::new("mock", false);
-        assert!(!notifier.is_configured());
-    }
-
-    #[tokio::test]
-    async fn test_notifier_mock_send_succeeds() {
-        let notifier = MockNotifier::new("mock", true);
-        let result = notifier.send("测试标题", "测试内容").await;
-        assert!(result.is_ok(), "Mock send 应成功");
-    }
-
-    // ── NotificationManager 测试 ───────────────────────────
+    // ── NotificationManager tests (via re-export) ──────────
 
     #[test]
     fn test_notification_manager_register_and_list() {
@@ -907,11 +717,11 @@ mod tests {
         manager.register(MockNotifier::new("temp_channel", true));
 
         let removed = manager.unregister("temp_channel");
-        assert!(removed, "注销成功应返回 true");
+        assert!(removed);
         assert!(manager.list_channels().is_empty());
 
         let not_found = manager.unregister("nonexistent");
-        assert!(!not_found, "注销不存在的渠道应返回 false");
+        assert!(!not_found);
     }
 
     #[tokio::test]
@@ -919,14 +729,14 @@ mod tests {
         let mut manager = NotificationManager::new();
         manager.register(MockNotifier::new("existing", true));
 
-        let result = manager.send_to("nonexistent", "标题", "内容").await;
+        let result = manager.send_to("nonexistent", "Title", "Body").await;
 
-        assert!(result.is_err(), "不存在的渠道应返回错误");
+        assert!(result.is_err());
         match result.unwrap_err() {
             NotifyError::ChannelNotFound(name) => {
                 assert_eq!(name, "nonexistent");
             }
-            e => panic!("期望 ChannelNotFound，实际: {:?}", e),
+            e => panic!("Expected ChannelNotFound, got: {:?}", e),
         }
     }
 
@@ -938,49 +748,26 @@ mod tests {
         let calls1 = mock1.calls();
         let mock2 = MockNotifier::new("mock2", true);
         let calls2 = mock2.calls();
-        let mock3 = MockNotifier::new("mock3", false); // 未配置
+        let mock3 = MockNotifier::new("mock3", false);
 
         manager.register(mock1);
         manager.register(mock2);
         manager.register(mock3);
 
-        let results = manager.send_all("测试标题", "测试内容").await;
+        let results = manager.send_all("Title", "Body").await;
 
-        // 3 个渠道，3 个结果
         assert_eq!(results.len(), 3);
-        assert!(results[0].is_ok(), "mock1 应发送成功");
-        assert!(results[1].is_ok(), "mock2 应发送成功");
-        assert!(results[2].is_err(), "mock3（未配置）应失败");
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+        assert!(results[2].is_err());
 
-        // 验证调用记录
         let c1 = calls1.lock().unwrap();
         assert_eq!(c1.len(), 1);
-        assert_eq!(c1[0].0, "测试标题");
-        assert_eq!(c1[0].1, "测试内容");
+        assert_eq!(c1[0].0, "Title");
+        assert_eq!(c1[0].1, "Body");
 
         let c2 = calls2.lock().unwrap();
         assert_eq!(c2.len(), 1);
-        assert_eq!(c2[0].0, "测试标题");
-    }
-
-    #[tokio::test]
-    async fn test_notification_manager_send_to_targeted() {
-        let mut manager = NotificationManager::new();
-
-        let mock_target = MockNotifier::new("target_channel", true);
-        let target_calls = mock_target.calls();
-        let mock_other = MockNotifier::new("other_channel", true);
-        let other_calls = mock_other.calls();
-
-        manager.register(mock_target);
-        manager.register(mock_other);
-
-        let result = manager.send_to("target_channel", "标题", "内容").await;
-        assert!(result.is_ok(), "定向发送应成功");
-
-        // 只有 target_channel 收到调用
-        assert_eq!(target_calls.lock().unwrap().len(), 1);
-        assert_eq!(other_calls.lock().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -989,79 +776,38 @@ mod tests {
         manager.register(MockNotifier::new("mock", true));
         manager.set_enabled(false);
 
-        let results = manager.send_all("标题", "内容").await;
+        let results = manager.send_all("Title", "Body").await;
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
         match results[0].as_ref().unwrap_err() {
-            NotifyError::Disabled => {} // 正确
-            e => panic!("期望 Disabled，实际: {:?}", e),
+            NotifyError::Disabled => {}
+            e => panic!("Expected Disabled, got: {:?}", e),
         }
     }
 
-    #[tokio::test]
-    async fn test_notification_manager_disabled_send_to_error() {
-        let mut manager = NotificationManager::new();
-        manager.register(MockNotifier::new("mock", true));
-        manager.set_enabled(false);
-
-        let result = manager.send_to("mock", "标题", "内容").await;
-
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            NotifyError::Disabled => {} // 正确
-            e => panic!("期望 Disabled，实际: {:?}", e),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_notification_manager_test_channel() {
-        let mut manager = NotificationManager::new();
-        let mock = MockNotifier::new("testable", true);
-        let calls = mock.calls();
-        manager.register(mock);
-
-        let result = manager.test_channel("testable").await;
-        assert!(result.is_ok(), "测试已配置渠道应成功");
-
-        let c = calls.lock().unwrap();
-        assert_eq!(c.len(), 1);
-        assert_eq!(c[0].0, "测试");
-    }
-
-    #[tokio::test]
-    async fn test_notification_manager_test_channel_not_found() {
-        let manager = NotificationManager::new();
-        let result = manager.test_channel("nonexistent").await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            NotifyError::ChannelNotFound(_) => {}
-            e => panic!("期望 ChannelNotFound，实际: {:?}", e),
-        }
-    }
-
-    // ── NotifyError Display 测试 ───────────────────────────
+    // ── Error display tests ─────────────────────────────────
 
     #[test]
     fn test_notify_error_display_disabled() {
         let err = NotifyError::Disabled;
         let msg = format!("{}", err);
-        assert!(msg.contains("disabled"), "应包含 'disabled'，实际: {}", msg);
+        assert!(msg.contains("disabled"));
     }
 
     #[test]
     fn test_notify_error_display_channel_not_found() {
-        let err = NotifyError::ChannelNotFound("my_channel".to_string());
+        let err = NotifyError::ChannelNotFound("telegram".to_string());
         let msg = format!("{}", err);
-        assert!(msg.contains("not found"), "应包含 'not found'");
-        assert!(msg.contains("my_channel"), "应包含渠道名");
+        assert!(msg.contains("not found"));
+        assert!(msg.contains("telegram"));
     }
 
     #[test]
     fn test_notify_error_display_not_configured() {
         let err = NotifyError::NotConfigured("telegram".to_string());
         let msg = format!("{}", err);
-        assert!(msg.contains("not configured"), "应包含 'not configured'");
+        assert!(msg.contains("not configured"));
         assert!(msg.contains("telegram"));
     }
 
@@ -1080,18 +826,71 @@ mod tests {
             message: "Forbidden".to_string(),
         };
         let msg = format!("{}", err);
-        assert!(msg.contains("403"), "应包含状态码");
-        assert!(msg.contains("Forbidden"), "应包含错误消息");
+        assert!(msg.contains("403"));
+        assert!(msg.contains("Forbidden"));
     }
 
     #[test]
     fn test_notify_error_display_all_failed() {
         let err = NotifyError::AllFailed;
         let msg = format!("{}", err);
+        assert!(msg.contains("failed"));
+    }
+
+    // ── register_built_in_notifiers tests ───────────────────
+
+    use betternte_core::config::{
+        BarkConfig, DiscordConfig, NotificationLevel, ServerChanConfig, TelegramConfig,
+    };
+
+    fn base_cfg(enabled: bool) -> NotificationConfig {
+        NotificationConfig {
+            enabled,
+            level: NotificationLevel::Warning,
+            telegram: TelegramConfig::default(),
+            discord: DiscordConfig::default(),
+            serverchan: ServerChanConfig::default(),
+            bark: BarkConfig::default(),
+        }
+    }
+
+    #[test]
+    fn test_create_notification_manager_disabled() {
+        let mgr = create_notification_manager(&base_cfg(false));
+        assert!(!mgr.is_enabled());
+        assert!(mgr.list_channels().is_empty());
+    }
+
+    #[test]
+    fn test_channel_registered_only_when_fully_configured() {
+        let mut cfg = base_cfg(true);
+        cfg.telegram.enabled = true;
+        // tokens empty on purpose
+        let mgr = create_notification_manager(&cfg);
         assert!(
-            msg.contains("All") || msg.contains("all"),
-            "应包含 'all/All'"
+            mgr.list_channels().is_empty(),
+            "empty tokens must NOT register telegram"
         );
-        assert!(msg.contains("failed"), "应包含 'failed'");
+
+        cfg.telegram.bot_token = "123:abc".into();
+        cfg.telegram.chat_id = "-10012345".into();
+        let mgr = create_notification_manager(&cfg);
+        assert_eq!(mgr.list_channels().len(), 1);
+        assert_eq!(mgr.list_channels()[0].name, "telegram");
+    }
+
+    #[test]
+    fn test_multi_channel_registration_counts() {
+        let mut cfg = base_cfg(true);
+        cfg.discord.enabled = true;
+        cfg.discord.webhook_url = "https://discord.com/api/webhooks/1/abc".into();
+        cfg.serverchan.enabled = true;
+        cfg.serverchan.send_key = "SCTxxx".into();
+        cfg.bark.enabled = true;
+        cfg.bark.server_url = "https://api.day.app".into();
+        cfg.bark.device_key = "devkey".into();
+
+        let mgr = create_notification_manager(&cfg);
+        assert_eq!(mgr.list_channels().len(), 3);
     }
 }

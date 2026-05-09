@@ -24,7 +24,7 @@ pub mod debug_ctx;
 pub mod event;
 pub mod flow_runner;
 pub mod loader;
-pub mod notify_builder;
+
 mod replay_playback;
 mod replay_recorder;
 pub mod replay_verify;
@@ -580,7 +580,7 @@ impl Engine {
         }
         if notify_changed {
             if let Some(ctx) = self.script_ctx.as_ref() {
-                let mgr = notify_builder::build_notification_manager(&self.config.notifications);
+                let mgr = betternte_notify::create_notification_manager(&self.config.notifications);
                 ctx.replace_notification_manager(mgr).await;
                 info!("notification manager rebuilt after config change");
             }

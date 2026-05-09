@@ -15,6 +15,7 @@ pub mod script;
 pub mod task;
 pub mod vision;
 pub mod window;
+pub mod notify_trait;
 
 // 重导出常用类型
 pub use config::CaptureMethod;
@@ -35,6 +36,9 @@ pub use replay::{
     ReplayManifestExpect, ReplayMode, ReplaySessionMetaInputPipelineExpect,
 };
 pub use window::{GameWindow, Rect, Size};
+
+// notify_trait module re-exports
+pub use notify_trait::{ChannelInfo, NotifyError, NotificationManager, Notifier};
 
 // capture 模块重导出
 pub use capture::{CaptureRuntimeOptions, CaptureTarget, ScreenCapture, WindowFinder};
