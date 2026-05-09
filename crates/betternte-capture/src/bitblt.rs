@@ -191,7 +191,7 @@ impl BitBltCapture {
             // Reuse the internal pixel buffer to avoid allocation per frame.
             let mut pixels = Vec::with_capacity(pixel_len);
             // SAFETY: GetDIBits will fill exactly `pixel_len` bytes.
-            unsafe { pixels.set_len(pixel_len) };
+            pixels.set_len(pixel_len);
             let gdb = GetDIBits(
                 hdc_mem,
                 hbmp,

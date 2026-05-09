@@ -86,11 +86,12 @@ impl FramePool {
         unsafe { buf.set_len(0) }
 
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let max_per_bucket = inner.max_per_bucket;
 
         // Find or create bucket for this capacity.
         match inner.buckets.iter_mut().find(|(c, _)| *c == cap) {
             Some((_, queue)) => {
-                if queue.len() < inner.max_per_bucket {
+                if queue.len() < max_per_bucket {
                     queue.push_back(buf);
                 }
                 // else: pool is full for this bucket, drop the buffer.
@@ -99,7 +100,7 @@ impl FramePool {
                 if inner.buckets.len() < 16 {
                     // Limit total number of distinct capacity buckets to avoid
                     // unbounded growth after resolution switches.
-                    let mut q = VecDeque::with_capacity(inner.max_per_bucket);
+                    let mut q = VecDeque::with_capacity(max_per_bucket);
                     q.push_back(buf);
                     inner.buckets.push((cap, q));
                 }

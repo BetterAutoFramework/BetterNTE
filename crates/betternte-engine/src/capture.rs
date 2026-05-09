@@ -471,8 +471,8 @@ impl Engine {
     /// Probe a single capture method: create → start → warmup → timed capture → stop.
     /// Returns the measured latency on success.
     async fn probe_capture_method(
-        method: &CaptureMethod,
-        whitelist: &[CaptureMethod],
+        method: &betternte_core::config::CaptureMethod,
+        whitelist: &[betternte_core::config::CaptureMethod],
         fps_cap: u32,
         target: &betternte_capture::CaptureTarget,
         runtime_opts: &betternte_core::CaptureRuntimeOptions,
