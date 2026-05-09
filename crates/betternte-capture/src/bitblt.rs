@@ -7,7 +7,7 @@
 
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -72,7 +72,8 @@ pub struct BitBltCapture {
     last_latency: Mutex<Option<f64>>,
     start_time: Mutex<Option<Instant>>,
     /// Reusable pixel buffer to avoid allocation per frame.
-    pixel_buffer: Mutex<Vec<u8>>,
+    /// Wrapped in Arc so the recycle closure in CaptureFrame can return it.
+    pixel_buffer: Arc<Mutex<Vec<u8>>>,
 }
 
 impl BitBltCapture {
@@ -86,7 +87,7 @@ impl BitBltCapture {
             capturing: AtomicBool::new(false),
             last_latency: Mutex::new(None),
             start_time: Mutex::new(None),
-            pixel_buffer: Mutex::new(Vec::new()),
+            pixel_buffer: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -188,10 +189,23 @@ impl BitBltCapture {
             };
 
             let pixel_len = (width * height * 4) as usize;
-            // Reuse the internal pixel buffer to avoid allocation per frame.
-            let mut pixels = Vec::with_capacity(pixel_len);
+            // Acquire the reusable pixel buffer from the instance field.
+            let mut pixels = {
+                let mut guard = self.pixel_buffer.lock().unwrap_or_else(|e| e.into_inner());
+                if guard.capacity() >= pixel_len {
+                    // Reuse existing buffer (zero allocation).
+                    std::mem::replace(&mut *guard, Vec::new())
+                } else {
+                    // First call or resolution increased — allocate fresh.
+                    Vec::with_capacity(pixel_len)
+                }
+            };
             // SAFETY: GetDIBits will fill exactly `pixel_len` bytes.
             pixels.set_len(pixel_len);
+
+            // Clone the Arc so the recycle closure can return the buffer.
+            let pixel_buffer_ref = self.pixel_buffer.clone();
+
             let gdb = GetDIBits(
                 hdc_mem,
                 hbmp,
@@ -211,12 +225,23 @@ impl BitBltCapture {
                 return Err(CaptureError::CaptureFailed("GetDIBits failed".into()));
             }
 
-            let frame = CaptureFrame::new(
+            // Create frame with a recycle callback that returns the pixel
+            // buffer to the pool when the frame is dropped.
+            let frame = CaptureFrame::new_with_recycle(
                 width,
                 height,
                 pixels,
                 PixelFormat::Bgra,
                 "BitBlt".to_string(),
+                move |buf: Vec<u8>| {
+                    if let Ok(mut guard) = pixel_buffer_ref.lock() {
+                        // Only keep the buffer if it's still the right size
+                        // and the pool doesn't already have one.
+                        if guard.capacity() == 0 {
+                            *guard = buf;
+                        }
+                    }
+                },
             );
 
             Ok(frame)

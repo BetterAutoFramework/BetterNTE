@@ -157,18 +157,19 @@ pub(crate) fn decode_png_into_core_frame(
     let img =
         image::open(path).with_context(|| format!("replay PNG decode {:?}", path.display()))?;
     let rgba = img.into_rgba8();
-    Ok(betternte_core::CaptureFrame {
-        width: rgba.width(),
-        height: rgba.height(),
-        data: rgba.into_raw(),
-        format: betternte_core::image::PixelFormat::Rgba,
-        timestamp: Utc::now(),
-        sequence,
-        source: format!(
+    let mut frame = betternte_core::CaptureFrame::new(
+        rgba.width(),
+        rgba.height(),
+        rgba.into_raw(),
+        betternte_core::image::PixelFormat::Rgba,
+        format!(
             "replay:{}",
             path.file_name().and_then(|s| s.to_str()).unwrap_or("png")
         ),
-    })
+    );
+    frame.timestamp = Utc::now();
+    frame.sequence = sequence;
+    Ok(frame)
 }
 
 #[cfg(test)]

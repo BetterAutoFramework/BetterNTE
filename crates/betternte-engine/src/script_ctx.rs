@@ -2917,6 +2917,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             sequence: 0,
             source: "test_source".to_string(),
+            recycle_fn: None,
         };
 
         ctx.update_shared_frame(frame, 48.5).await;
@@ -2954,6 +2955,7 @@ mod tests {
             timestamp: chrono::Utc::now(),
             sequence: 0,
             source: "loop".to_string(),
+            recycle_fn: None,
         };
         ctx.update_shared_frame(frame, 30.0).await;
 
