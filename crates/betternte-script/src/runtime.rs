@@ -348,7 +348,7 @@ impl ScriptRuntime {
             let frame = CaptureFrame {
                 width: 0,
                 height: 0,
-                data: vec![],
+                data: Arc::new(vec![]),
             };
             entry.script.on_capture(ctx, &frame).await
         } else {
@@ -613,7 +613,7 @@ mod tests {
             Ok(CaptureFrame {
                 width: 1,
                 height: 1,
-                data: vec![0, 0, 0, 0],
+                data: Arc::new(vec![0, 0, 0, 0]),
             })
         }
         async fn capture_region(&self, _region: &Region, _force: bool) -> Result<CaptureFrame> {

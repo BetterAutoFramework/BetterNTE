@@ -1,5 +1,7 @@
 //! Capture orchestration: capture loop, window binding, screenshot testing.
 
+use std::sync::Arc;
+
 use tracing::{error, info, warn};
 #[cfg(windows)]
 use windows::Win32::Foundation::HWND;
@@ -762,7 +764,7 @@ impl Engine {
     }
 
     /// Shared FPS smoothing, shared-frame update, optional replay PNG sampling, and trigger tick.
-    /// Takes `frame.data` for the script tick via [`std::mem::take`] (call only at end of tick).
+    /// Shares `frame.data` (Arc) with the script tick (call only at end of tick).
     async fn tick_capture_frame_after_acquire(
         frame: &mut betternte_core::CaptureFrame,
         source_override: Option<&str>,
@@ -796,7 +798,7 @@ impl Engine {
 
         ctx.update_shared_frame(frame.clone(), current_fps).await;
 
-        let data = std::mem::take(&mut frame.data);
+        let data = Arc::clone(&frame.data);
         let script_frame = betternte_script::CaptureFrame {
             width: frame.width,
             height: frame.height,

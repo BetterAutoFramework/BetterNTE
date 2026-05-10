@@ -353,7 +353,7 @@ impl<T: ScriptContext + ?Sized> IpcCallContext for T {}
 pub struct CaptureFrame {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -851,10 +851,10 @@ mod tests {
         let frame = CaptureFrame {
             width: 2,
             height: 2,
-            data: vec![0, 0, 0, 255],
+            data: Arc::new(vec![0, 0, 0, 255]),
         };
         let cloned = frame.clone();
         assert_eq!(cloned.width, 2);
-        assert_eq!(cloned.data, vec![0, 0, 0, 255]);
+        assert_eq!(*cloned.data, vec![0, 0, 0, 255]);
     }
 }

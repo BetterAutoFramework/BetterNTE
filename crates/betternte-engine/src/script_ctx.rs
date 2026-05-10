@@ -1325,14 +1325,14 @@ impl ScriptContext for EngineScriptContext {
         Ok(CaptureFrame {
             width: w,
             height: h,
-            data: cropped,
+            data: Arc::new(cropped),
         })
     }
 
     async fn save_screenshot(&self, force: bool) -> Result<String> {
         let frame = self.capture(force).await?;
         // BGRA → RGBA
-        let mut rgba = frame.data.clone();
+        let mut rgba = (*frame.data).clone();
         for chunk in rgba.chunks_exact_mut(4) {
             chunk.swap(0, 2);
         }
@@ -1419,8 +1419,7 @@ impl ScriptContext for EngineScriptContext {
         let engine_guard = match self.ocr_engine.as_ref() {
             Some(e) => e,
             None => {
-                warn!("ocr: no OCR engine injected");
-                return Ok(String::new());
+                return Err(anyhow::anyhow!("OCR engine not injected (missing builder setup)"));
             }
         };
 
@@ -1461,10 +1460,9 @@ impl ScriptContext for EngineScriptContext {
         let mut engine = engine_guard.lock().await;
         if !engine.is_ready() {
             let ocr_cfg = self.ocr_config.lock().unwrap().clone();
-            if let Err(e) = engine.init(&ocr_cfg).await {
-                warn!(error = %e, "ocr: OCR engine init failed");
-                return Ok(String::new());
-            }
+            engine.init(&ocr_cfg).await.map_err(|e| {
+                anyhow::anyhow!("OCR engine init failed (model_path={}): {}", ocr_cfg.model_path, e)
+            })?;
         }
 
         let eligible = Self::ocr_batch_eligible(region, vision_w, vision_h);
@@ -1555,10 +1553,7 @@ impl ScriptContext for EngineScriptContext {
                     .join(" ");
                 Ok(text)
             }
-            Err(e) => {
-                warn!(error = %e, "ocr: recognition failed");
-                Ok(String::new())
-            }
+            Err(e) => Err(anyhow::anyhow!("OCR recognition failed: {}", e)),
         }
     }
 
@@ -1567,18 +1562,16 @@ impl ScriptContext for EngineScriptContext {
         let engine_guard = match self.ocr_engine.as_ref() {
             Some(e) => e,
             None => {
-                warn!("ocr_all: no OCR engine injected");
-                return Ok(vec![]);
+                return Err(anyhow::anyhow!("OCR engine not injected (missing builder setup)"));
             }
         };
 
         let mut engine = engine_guard.lock().await;
         if !engine.is_ready() {
             let ocr_cfg = self.ocr_config.lock().unwrap().clone();
-            if let Err(e) = engine.init(&ocr_cfg).await {
-                warn!(error = %e, "ocr_all: OCR engine init failed");
-                return Ok(vec![]);
-            }
+            engine.init(&ocr_cfg).await.map_err(|e| {
+                anyhow::anyhow!("OCR engine init failed (model_path={}): {}", ocr_cfg.model_path, e)
+            })?;
         }
 
         match engine.recognize(&dyn_img).await {
@@ -1605,8 +1598,7 @@ impl ScriptContext for EngineScriptContext {
                 Ok(mapped)
             }
             Err(e) => {
-                warn!(error = %e, "ocr_all: recognition failed");
-                Ok(vec![])
+                Err(anyhow::anyhow!("OCR recognition failed: {}", e))
             }
         }
     }
@@ -2909,22 +2901,20 @@ mod tests {
     #[tokio::test]
     async fn test_update_shared_frame_updates_shared_and_counter() {
         let ctx = EngineScriptContext::new(serde_json::json!({}));
-        let frame = CoreCaptureFrame {
-            width: 2,
-            height: 1,
-            data: vec![1, 2, 3, 4, 5, 6, 7, 8],
-            format: PixelFormat::Rgba,
-            timestamp: chrono::Utc::now(),
-            sequence: 0,
-            source: "test_source".to_string(),
-        };
+        let mut frame = CoreCaptureFrame::new(
+            2, 1,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+            PixelFormat::Rgba,
+            "test_source".to_string(),
+        );
+        frame.timestamp = chrono::Utc::now();
 
         ctx.update_shared_frame(frame, 48.5).await;
 
         let cached = ctx.get_cached_frame().await.expect("cached frame");
         assert_eq!(cached.width, 2);
         assert_eq!(cached.height, 1);
-        assert_eq!(cached.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(*cached.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let shared = ctx.shared_frame.read().await.clone().expect("shared frame");
         assert_eq!(shared.frame_id, 1);
@@ -2946,15 +2936,13 @@ mod tests {
             .to_string()
             .contains("No shared frame available and fallback capture is disabled"));
 
-        let frame = CoreCaptureFrame {
-            width: 1,
-            height: 1,
-            data: vec![10, 20, 30, 40],
-            format: PixelFormat::Rgba,
-            timestamp: chrono::Utc::now(),
-            sequence: 0,
-            source: "loop".to_string(),
-        };
+        let mut frame = CoreCaptureFrame::new(
+            1, 1,
+            vec![10, 20, 30, 40],
+            PixelFormat::Rgba,
+            "loop".to_string(),
+        );
+        frame.timestamp = chrono::Utc::now();
         ctx.update_shared_frame(frame, 30.0).await;
 
         let cached = ctx
@@ -2963,7 +2951,7 @@ mod tests {
             .expect("shared frame should work");
         assert_eq!(cached.width, 1);
         assert_eq!(cached.height, 1);
-        assert_eq!(cached.data, vec![10, 20, 30, 40]);
+        assert_eq!(*cached.data, vec![10, 20, 30, 40]);
     }
 
     #[test]
