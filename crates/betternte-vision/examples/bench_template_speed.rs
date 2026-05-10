@@ -46,7 +46,7 @@ impl BenchMode {
 async fn bench_loop(
     label: &str,
     matcher: Arc<dyn TemplateMatcher>,
-    scene: &image::DynamicImage,
+    scene: &opencv::core::Mat,
     template: &image::DynamicImage,
     params: &TemplateMatchParams,
     warmup: u32,
@@ -182,6 +182,19 @@ async fn main() -> anyhow::Result<()> {
     let scene = image::DynamicImage::ImageRgba8(scene);
     let template = image::DynamicImage::ImageRgba8(template);
 
+    // Convert scene to BGRA Mat (what TemplateMatcher now expects)
+    let rgba = scene.to_rgba8();
+    let (w, h) = (rgba.width() as i32, rgba.height() as i32);
+    let mut bgra_data = Vec::with_capacity((w * h * 4) as usize);
+    for pixel in rgba.pixels() {
+        bgra_data.push(pixel[2]); // B
+        bgra_data.push(pixel[1]); // G
+        bgra_data.push(pixel[0]); // R
+        bgra_data.push(pixel[3]); // A
+    }
+    let flat = Mat::from_slice(&bgra_data)?;
+    let scene_mat = flat.reshape(4, h)?.try_clone()?;
+
     if template.width() > scene.width() || template.height() > scene.height() {
         anyhow::bail!(
             "template {}x{} larger than scene {}x{}",
@@ -209,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
     bench_loop(
         "OpenCvTemplateMatcher(full)",
         cv,
-        &scene,
+        &scene_mat,
         &template,
         &params,
         warmup,

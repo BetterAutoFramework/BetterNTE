@@ -189,6 +189,15 @@ pub trait ScriptContext: Send + Sync {
     async fn ocr_all(&self) -> Result<Vec<OcrResult>>;
     /// Get pixel color at (x, y). Pass `frame` to use an explicit frame, or `None` for cached frame.
     async fn get_color(&self, x: i32, y: i32) -> Result<String>;
+    /// Get pixel colors at multiple points in a single frame decode.
+    /// Each element in `points` is `(x, y)`.
+    async fn get_colors(&self, points: &[(i32, i32)]) -> Result<Vec<String>> {
+        let mut out = Vec::with_capacity(points.len());
+        for &(x, y) in points {
+            out.push(self.get_color(x, y).await?);
+        }
+        Ok(out)
+    }
     /// Compare pixel color at (x, y). Pass `frame` to use an explicit frame, or `None` for cached frame.
     async fn color_match(&self, x: i32, y: i32, color: &str, tolerance: u8) -> Result<bool>;
     /// Compare multiple points and return true only when all points match.
