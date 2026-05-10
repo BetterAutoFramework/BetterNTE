@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Context;
 use betternte_core::ReplayMode;
@@ -160,7 +161,7 @@ pub(crate) fn decode_png_into_core_frame(
     Ok(betternte_core::CaptureFrame {
         width: rgba.width(),
         height: rgba.height(),
-        data: rgba.into_raw(),
+        data: Arc::new(rgba.into_raw()),
         format: betternte_core::image::PixelFormat::Rgba,
         timestamp: Utc::now(),
         sequence,

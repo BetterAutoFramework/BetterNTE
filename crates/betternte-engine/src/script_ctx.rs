@@ -30,6 +30,7 @@ use betternte_script::{
 };
 use betternte_vision::TemplateCache;
 use betternte_vision::{apply_text_color_filter, parse_color_str};
+use opencv::prelude::*;
 
 #[derive(Clone)]
 struct ManifestPermScope {
@@ -49,6 +50,12 @@ pub struct SharedFrameSnapshot {
 struct ScaledFrameCache {
     source_key: u64,
     image: DynamicImage,
+}
+
+#[derive(Clone)]
+struct MatFrameCache {
+    source_key: u64,
+    mat: opencv::core::Mat,
 }
 
 #[derive(Clone)]
@@ -116,6 +123,7 @@ pub struct EngineScriptContext {
     // Capture frame cache
     frame_cache: tokio::sync::Mutex<Option<CoreCaptureFrame>>,
     scaled_frame_cache: tokio::sync::Mutex<HashMap<(u32, u32), ScaledFrameCache>>,
+    mat_frame_cache: tokio::sync::Mutex<HashMap<(u32, u32), MatFrameCache>>,
     ocr_batch_cache: tokio::sync::Mutex<Option<OcrBatchCacheSnapshot>>,
     frame_number: AtomicU64,
 
@@ -222,6 +230,7 @@ impl EngineScriptContext {
             ocr_engine: None,
             frame_cache: tokio::sync::Mutex::new(None),
             scaled_frame_cache: tokio::sync::Mutex::new(HashMap::new()),
+            mat_frame_cache: tokio::sync::Mutex::new(HashMap::new()),
             ocr_batch_cache: tokio::sync::Mutex::new(None),
             frame_number: AtomicU64::new(0),
             fps: AtomicU32::new(0),
@@ -641,6 +650,64 @@ impl EngineScriptContext {
             .map_err(|e| anyhow::anyhow!("Frame conversion error: {}", e))
     }
 
+    /// Convert a core CaptureFrame to an OpenCV Mat, skipping DynamicImage entirely.
+    /// Works with any pixel format (BGRA/RGBA → 4ch, BGR/RGB → 3ch, Gray → 1ch).
+    fn frame_to_mat(frame: &CoreCaptureFrame) -> Result<opencv::core::Mat> {
+        let w = frame.width as i32;
+        let h = frame.height as i32;
+        let channels = frame.format.bytes_per_pixel() as i32;
+
+        let cv_type = match channels {
+            4 => opencv::core::CV_8UC4,
+            3 => opencv::core::CV_8UC3,
+            1 => opencv::core::CV_8UC1,
+            _ => return Err(anyhow::anyhow!("Unsupported pixel format channel count: {}", channels)),
+        };
+
+        // Build a 2-D Mat directly from the flat byte slice.
+        // Mat::new_rows_cols_with_data creates a borrowed Mat; try_clone makes it owned.
+        let data = &*frame.data;
+        let mat = match channels {
+            4 => {
+                // Reinterpret flat &[u8] as &[Vec4b] (4-byte BGRA pixels)
+                let pixel_count = (w * h) as usize;
+                assert!(data.len() >= pixel_count * 4, "frame data too short");
+                let bgra_data: &[opencv::core::Vec4b] = unsafe {
+                    std::slice::from_raw_parts(data.as_ptr() as *const opencv::core::Vec4b, pixel_count)
+                };
+                let borrowed = opencv::core::Mat::new_rows_cols_with_data(h, w, bgra_data)
+                    .map_err(|e| anyhow::anyhow!("Mat::new_rows_cols_with_data error: {}", e))?;
+                borrowed.try_clone()
+                    .map_err(|e| anyhow::anyhow!("Mat::try_clone error: {}", e))?
+            }
+            3 => {
+                let pixel_count = (w * h) as usize;
+                assert!(data.len() >= pixel_count * 3, "frame data too short");
+                let bgr_data: &[opencv::core::Vec3b] = unsafe {
+                    std::slice::from_raw_parts(data.as_ptr() as *const opencv::core::Vec3b, pixel_count)
+                };
+                let borrowed = opencv::core::Mat::new_rows_cols_with_data(h, w, bgr_data)
+                    .map_err(|e| anyhow::anyhow!("Mat::new_rows_cols_with_data error: {}", e))?;
+                borrowed.try_clone()
+                    .map_err(|e| anyhow::anyhow!("Mat::try_clone error: {}", e))?
+            }
+            1 => {
+                let borrowed = opencv::core::Mat::new_rows_cols_with_data(h, w, data)
+                    .map_err(|e| anyhow::anyhow!("Mat::new_rows_cols_with_data error: {}", e))?;
+                borrowed.try_clone()
+                    .map_err(|e| anyhow::anyhow!("Mat::try_clone error: {}", e))?
+            }
+            _ => unreachable!(),
+        };
+
+        // Verify the Mat has the expected type and dimensions
+        debug_assert_eq!(mat.rows(), h);
+        debug_assert_eq!(mat.cols(), w);
+        debug_assert_eq!(mat.typ() & 7, cv_type & 7); // compare depth bits
+
+        Ok(mat)
+    }
+
     async fn get_decoded_frame_for_vision(&self) -> Result<(CoreCaptureFrame, DynamicImage)> {
         let frame = self.get_cached_core_frame().await?;
         let key = Self::frame_key(&frame);
@@ -703,6 +770,65 @@ impl EngineScriptContext {
             },
         );
         Ok((frame, image))
+    }
+
+    async fn get_decoded_mat_for_vision(&self) -> Result<(CoreCaptureFrame, opencv::core::Mat)> {
+        let frame = self.get_cached_core_frame().await?;
+        let key = Self::frame_key(&frame);
+
+        let design: Option<(u32, u32)> = *self.design_resolution.lock().unwrap();
+        let (target_w, target_h) = design.unwrap_or((frame.width, frame.height));
+
+        // Check mat cache
+        {
+            let cache = self.mat_frame_cache.lock().await;
+            if let Some(snap) = cache.get(&(target_w, target_h)) {
+                if snap.source_key == key {
+                    return Ok((frame, snap.mat.clone()));
+                }
+            }
+        }
+
+        // Cache miss — create Mat from raw bytes (zero-copy where possible)
+        let started = Instant::now();
+        let mat = Self::frame_to_mat(&frame)?;
+
+        // Resize if capture resolution != design resolution
+        let mat = if target_w != frame.width || target_h != frame.height {
+            use opencv::core::Size;
+            use opencv::imgproc;
+            let mut resized = opencv::core::Mat::default();
+            let size = Size::new(target_w as i32, target_h as i32);
+            imgproc::resize(&mat, &mut resized, size, 0.0, 0.0, imgproc::INTER_NEAREST)
+                .map_err(|e| anyhow::anyhow!("cv::resize error: {}", e))?;
+            resized
+        } else {
+            mat
+        };
+
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        if perf_enabled() {
+            let mode = perf_mode();
+            if mode == PerfMode::Verbose || elapsed_ms >= perf_slow_threshold_ms() {
+                tracing::info!(
+                    target: "betternte_perf",
+                    event = "decode_mat",
+                    frame_key = key,
+                    target_w = target_w,
+                    target_h = target_h,
+                    ms = elapsed_ms,
+                    "decode_mat"
+                );
+            }
+        }
+
+        // Store in cache
+        self.mat_frame_cache.lock().await.insert(
+            (target_w, target_h),
+            MatFrameCache { source_key: key, mat: mat.clone() },
+        );
+
+        Ok((frame, mat))
     }
 
     fn ocr_batch_eligible(region: &Region, frame_w: u32, frame_h: u32) -> bool {
@@ -797,7 +923,7 @@ impl EngineScriptContext {
         &self,
         frame_w: u32,
         frame_h: u32,
-        frame_img: &DynamicImage,
+        frame_mat: &opencv::core::Mat,
         name: &str,
         opts: Option<&FindTemplateOpts>,
     ) -> Result<Vec<MatchResult>> {
@@ -834,13 +960,13 @@ impl EngineScriptContext {
             .load(&template_path)
             .map_err(|e| anyhow::anyhow!("Failed to load template '{}': {}", name, e))?;
 
-        let (cropped, roi_offset_x, roi_offset_y): (Option<DynamicImage>, i32, i32) =
+        let (search_mat, roi_offset_x, roi_offset_y): (opencv::core::Mat, i32, i32) =
             if let Some(roi) = opts.and_then(|o| o.roi.as_ref()) {
-                let x = roi.x.max(0) as u32;
-                let y = roi.y.max(0) as u32;
-                let w = roi.width.min(frame_w.saturating_sub(x));
-                let h = roi.height.min(frame_h.saturating_sub(y));
-                if w == 0 || h == 0 {
+                let x = roi.x.max(0) as i32;
+                let y = roi.y.max(0) as i32;
+                let w = (roi.width as i32).min(frame_w as i32 - x);
+                let h = (roi.height as i32).min(frame_h as i32 - y);
+                if w <= 0 || h <= 0 {
                     warn!(
                         name,
                         roi_x = roi.x,
@@ -853,14 +979,17 @@ impl EngineScriptContext {
                     );
                     return Ok(vec![]);
                 }
-                (Some(frame_img.crop_imm(x, y, w, h)), x as i32, y as i32)
+                let rect = opencv::core::Rect::new(x, y, w, h);
+                let cropped = frame_mat.roi(rect)
+                    .map_err(|e| anyhow::anyhow!("Mat::roi error: {}", e))?
+                    .try_clone()?;
+                (cropped, x, y)
             } else {
-                (None, 0, 0)
+                (frame_mat.try_clone()?, 0, 0)
             };
-        let search_ref: &DynamicImage = cropped.as_ref().unwrap_or(frame_img);
 
         let results = match matcher
-            .match_template(search_ref, &template_img, &match_params)
+            .match_template(&search_mat, &template_img, &match_params)
             .await
         {
             Ok(v) => v,
@@ -956,7 +1085,7 @@ fn color_runs_from_x_samples(mut xs: Vec<i32>, gap_max: i32) -> Vec<(i32, i32)> 
 
 /// First screen-x where `target` matches on row `ry`, scanning left → right every `step_x`.
 fn strip_first_color_ltr(
-    sub: &DynamicImage,
+    sub: &opencv::core::Mat,
     rw: u32,
     ry: i32,
     x0: i32,
@@ -981,7 +1110,7 @@ fn strip_first_color_ltr(
 
 /// First screen-x where `target` matches on row `ry`, scanning right → left every `step_x`.
 fn strip_first_color_rtl(
-    sub: &DynamicImage,
+    sub: &opencv::core::Mat,
     rw: u32,
     ry: i32,
     x0: i32,
@@ -1120,7 +1249,7 @@ fn clamp_color_match_shift(max_dx: i32, max_dy: i32) -> (i32, i32) {
 /// Evaluate all points under translation `(ox, oy)`. When `collect` is false, the returned vec is empty.
 fn color_match_eval_offset(
     detector: &Arc<dyn ColorDetector>,
-    dyn_img: &DynamicImage,
+    mat: &opencv::core::Mat,
     points: &[ColorMatchPoint],
     point_tolerances: &[ColorTolerance],
     ox: i32,
@@ -1128,8 +1257,8 @@ fn color_match_eval_offset(
     collect: bool,
 ) -> (bool, Vec<ColorMatchPointResult>) {
     debug_assert_eq!(points.len(), point_tolerances.len());
-    let w = dyn_img.width() as i32;
-    let h = dyn_img.height() as i32;
+    let w = mat.cols();
+    let h = mat.rows();
     let mut rows = Vec::new();
     let mut all_ok = true;
 
@@ -1146,12 +1275,12 @@ fn color_match_eval_offset(
         } else {
             let pt = Point { x: sx, y: sy };
             let actual_hex = detector
-                .get_pixel_color(&dyn_img, pt)
+                .get_pixel_color(mat, pt)
                 .map(|c| color_to_hex(&c))
                 .unwrap_or_else(|| "#000000".to_string());
             match parse_hex_color(&p.color) {
                 Some(target) => {
-                    let m = detector.detect_pixel(&dyn_img, pt, target, tol_mode);
+                    let m = detector.detect_pixel(mat, pt, target, tol_mode);
                     (actual_hex, true, m)
                 }
                 None => (actual_hex, false, false),
@@ -1325,14 +1454,14 @@ impl ScriptContext for EngineScriptContext {
         Ok(CaptureFrame {
             width: w,
             height: h,
-            data: cropped,
+            data: Arc::new(cropped),
         })
     }
 
     async fn save_screenshot(&self, force: bool) -> Result<String> {
         let frame = self.capture(force).await?;
         // BGRA → RGBA
-        let mut rgba = frame.data.clone();
+        let mut rgba = (*frame.data).clone();
         for chunk in rgba.chunks_exact_mut(4) {
             chunk.swap(0, 2);
         }
@@ -1371,12 +1500,12 @@ impl ScriptContext for EngineScriptContext {
         name: &str,
         opts: Option<FindTemplateOpts>,
     ) -> Result<Vec<MatchResult>> {
-        let (_frame, frame_img) = self.get_decoded_frame_for_vision().await?;
-        let (fw, fh) = frame_img.dimensions();
+        let (_frame, frame_mat) = self.get_decoded_mat_for_vision().await?;
+        let (fw, fh) = (frame_mat.cols() as u32, frame_mat.rows() as u32);
         self.find_templates_on_decoded_frame(
             fw,
             fh,
-            &frame_img,
+            &frame_mat,
             name,
             opts.as_ref(),
         )
@@ -1390,8 +1519,8 @@ impl ScriptContext for EngineScriptContext {
         if entries.is_empty() {
             return Ok(vec![]);
         }
-        let (_frame, frame_img) = self.get_decoded_frame_for_vision().await?;
-        let (fw, fh) = frame_img.dimensions();
+        let (_frame, frame_mat) = self.get_decoded_mat_for_vision().await?;
+        let (fw, fh) = (frame_mat.cols() as u32, frame_mat.rows() as u32);
         let mut out = Vec::with_capacity(entries.len());
         for e in entries {
             if e.name.is_empty() {
@@ -1399,7 +1528,7 @@ impl ScriptContext for EngineScriptContext {
                 continue;
             }
             let matches = self
-                .find_templates_on_decoded_frame(fw, fh, &frame_img, &e.name, Some(&e.opts))
+                .find_templates_on_decoded_frame(fw, fh, &frame_mat, &e.name, Some(&e.opts))
                 .await?;
             let ri = e.opts.result_index.unwrap_or(0);
             let idx = normalize_result_index(ri, matches.len());
@@ -1419,8 +1548,7 @@ impl ScriptContext for EngineScriptContext {
         let engine_guard = match self.ocr_engine.as_ref() {
             Some(e) => e,
             None => {
-                warn!("ocr: no OCR engine injected");
-                return Ok(String::new());
+                return Err(anyhow::anyhow!("OCR engine not injected (missing builder setup)"));
             }
         };
 
@@ -1461,10 +1589,9 @@ impl ScriptContext for EngineScriptContext {
         let mut engine = engine_guard.lock().await;
         if !engine.is_ready() {
             let ocr_cfg = self.ocr_config.lock().unwrap().clone();
-            if let Err(e) = engine.init(&ocr_cfg).await {
-                warn!(error = %e, "ocr: OCR engine init failed");
-                return Ok(String::new());
-            }
+            engine.init(&ocr_cfg).await.map_err(|e| {
+                anyhow::anyhow!("OCR engine init failed (model_path={}): {}", ocr_cfg.model_path, e)
+            })?;
         }
 
         let eligible = Self::ocr_batch_eligible(region, vision_w, vision_h);
@@ -1555,10 +1682,7 @@ impl ScriptContext for EngineScriptContext {
                     .join(" ");
                 Ok(text)
             }
-            Err(e) => {
-                warn!(error = %e, "ocr: recognition failed");
-                Ok(String::new())
-            }
+            Err(e) => Err(anyhow::anyhow!("OCR recognition failed: {}", e)),
         }
     }
 
@@ -1567,18 +1691,16 @@ impl ScriptContext for EngineScriptContext {
         let engine_guard = match self.ocr_engine.as_ref() {
             Some(e) => e,
             None => {
-                warn!("ocr_all: no OCR engine injected");
-                return Ok(vec![]);
+                return Err(anyhow::anyhow!("OCR engine not injected (missing builder setup)"));
             }
         };
 
         let mut engine = engine_guard.lock().await;
         if !engine.is_ready() {
             let ocr_cfg = self.ocr_config.lock().unwrap().clone();
-            if let Err(e) = engine.init(&ocr_cfg).await {
-                warn!(error = %e, "ocr_all: OCR engine init failed");
-                return Ok(vec![]);
-            }
+            engine.init(&ocr_cfg).await.map_err(|e| {
+                anyhow::anyhow!("OCR engine init failed (model_path={}): {}", ocr_cfg.model_path, e)
+            })?;
         }
 
         match engine.recognize(&dyn_img).await {
@@ -1605,27 +1727,63 @@ impl ScriptContext for EngineScriptContext {
                 Ok(mapped)
             }
             Err(e) => {
-                warn!(error = %e, "ocr_all: recognition failed");
-                Ok(vec![])
+                Err(anyhow::anyhow!("OCR recognition failed: {}", e))
             }
         }
     }
 
     async fn get_color(&self, x: i32, y: i32) -> Result<String> {
-        let detector = match self.color_detector.as_ref() {
-            Some(d) => d,
-            None => {
-                warn!("get_color: no color detector injected");
-                return Ok("#000000".into());
-            }
-        };
-
-        let (_, dyn_img) = self.get_decoded_frame_for_vision().await?;
-
-        match detector.get_pixel_color(&dyn_img, Point { x, y }) {
-            Some(c) => Ok(color_to_hex(&c)),
-            None => Ok("#000000".into()),
+        let frame = self.get_cached_core_frame().await?;
+        let w = frame.width as i32;
+        let h = frame.height as i32;
+        if x < 0 || y < 0 || x >= w || y >= h {
+            return Ok("#000000".into());
         }
+        let bpp = frame.format.bytes_per_pixel() as usize;
+        let stride = frame.width as usize * bpp;
+        let off = y as usize * stride + x as usize * bpp;
+        let data = &*frame.data;
+        if off + bpp > data.len() {
+            return Ok("#000000".into());
+        }
+        let (r, g, b) = match frame.format {
+            betternte_core::image::PixelFormat::Bgra => (data[off + 2], data[off + 1], data[off]),
+            betternte_core::image::PixelFormat::Rgba => (data[off], data[off + 1], data[off + 2]),
+            betternte_core::image::PixelFormat::Bgr => (data[off + 2], data[off + 1], data[off]),
+            betternte_core::image::PixelFormat::Rgb => (data[off], data[off + 1], data[off + 2]),
+            betternte_core::image::PixelFormat::Gray => (data[off], data[off], data[off]),
+        };
+        Ok(format!("#{:02x}{:02x}{:02x}", r, g, b))
+    }
+
+    async fn get_colors(&self, points: &[(i32, i32)]) -> Result<Vec<String>> {
+        let frame = self.get_cached_core_frame().await?;
+        let w = frame.width as i32;
+        let h = frame.height as i32;
+        let data = &*frame.data;
+        let bpp = frame.format.bytes_per_pixel() as usize;
+        let stride = frame.width as usize * bpp;
+
+        Ok(points
+            .iter()
+            .map(|&(x, y)| {
+                if x < 0 || y < 0 || x >= w || y >= h {
+                    return "#000000".into();
+                }
+                let off = y as usize * stride + x as usize * bpp;
+                if off + bpp > data.len() {
+                    return "#000000".into();
+                }
+                let (r, g, b) = match frame.format {
+                    betternte_core::image::PixelFormat::Bgra => (data[off + 2], data[off + 1], data[off]),
+                    betternte_core::image::PixelFormat::Rgba => (data[off], data[off + 1], data[off + 2]),
+                    betternte_core::image::PixelFormat::Bgr => (data[off + 2], data[off + 1], data[off]),
+                    betternte_core::image::PixelFormat::Rgb => (data[off], data[off + 1], data[off + 2]),
+                    betternte_core::image::PixelFormat::Gray => (data[off], data[off], data[off]),
+                };
+                format!("#{:02x}{:02x}{:02x}", r, g, b)
+            })
+            .collect())
     }
 
     async fn color_match(&self, x: i32, y: i32, color: &str, tolerance: u8) -> Result<bool> {
@@ -1642,10 +1800,10 @@ impl ScriptContext for EngineScriptContext {
             None => return Ok(false),
         };
 
-        let (_, dyn_img) = self.get_decoded_frame_for_vision().await?;
+        let (_, mat) = self.get_decoded_mat_for_vision().await?;
 
         Ok(detector.detect_pixel(
-            &dyn_img,
+            &mat,
             Point { x, y },
             target,
             ColorTolerance::from(tolerance),
@@ -1683,7 +1841,7 @@ impl ScriptContext for EngineScriptContext {
             }
         };
 
-        let (_, dyn_img) = self.get_decoded_frame_for_vision().await?;
+        let (_, mat) = self.get_decoded_mat_for_vision().await?;
 
         let mut offsets: Vec<(i32, i32)> = vec![(0, 0)];
         if let Some((mx, my)) = shift_max {
@@ -1702,7 +1860,7 @@ impl ScriptContext for EngineScriptContext {
             let collect = debug;
             let (pass, rows) = color_match_eval_offset(
                 detector,
-                &dyn_img,
+                &mat,
                 points,
                 &point_tolerances,
                 ox,
@@ -1719,7 +1877,7 @@ impl ScriptContext for EngineScriptContext {
         }
 
         let baseline = if debug {
-            color_match_eval_offset(detector, &dyn_img, points, &point_tolerances, 0, 0, true).1
+            color_match_eval_offset(detector, &mat, points, &point_tolerances, 0, 0, true).1
         } else {
             vec![]
         };
@@ -1793,16 +1951,20 @@ impl ScriptContext for EngineScriptContext {
             }
         };
 
-        let (_, dyn_img) = self.get_decoded_frame_for_vision().await?;
-        let (iw, ih) = dyn_img.dimensions();
+        let (_, mat) = self.get_decoded_mat_for_vision().await?;
+        let iw = mat.cols() as u32;
+        let ih = mat.rows() as u32;
         let x0 = region.x.max(0).min(iw.saturating_sub(1) as i32);
         let y0 = region.y.max(0).min(ih.saturating_sub(1) as i32);
         let x1 = (region.x + region.width as i32).min(iw as i32).max(x0 + 1);
         let y1 = (region.y + region.height as i32).min(ih as i32).max(y0 + 1);
         let rw = (x1 - x0).max(1) as u32;
         let rh = (y1 - y0).max(1) as u32;
-        let sub = dyn_img.crop_imm(x0 as u32, y0 as u32, rw, rh);
-        let (_sw, sh) = sub.dimensions();
+        let rect = opencv::core::Rect::new(x0, y0, rw as i32, rh as i32);
+        let sub = mat.roi(rect)
+            .map_err(|e| anyhow::anyhow!("Mat::roi error: {}", e))?
+            .try_clone()?;
+        let sh = rh;
         let ry = if let Some(v) = opts.get("rowOffset").and_then(|v| v.as_i64()) {
             (v as i32).clamp(0, sh.saturating_sub(1) as i32)
         } else {
@@ -1928,8 +2090,9 @@ impl ScriptContext for EngineScriptContext {
             }
         };
 
-        let (_, dyn_img) = self.get_decoded_frame_for_vision().await?;
-        let (iw, ih) = dyn_img.dimensions();
+        let (_, mat) = self.get_decoded_mat_for_vision().await?;
+        let iw = mat.cols() as u32;
+        let ih = mat.rows() as u32;
         let x0 = region.x.max(0).min(iw.saturating_sub(1) as i32);
         let y0 = region.y.max(0).min(ih.saturating_sub(1) as i32);
         let x1 = (region.x + region.width as i32)
@@ -1940,8 +2103,11 @@ impl ScriptContext for EngineScriptContext {
             .max(y0 + 1);
         let rw = (x1 - x0).max(1) as u32;
         let rh = (y1 - y0).max(1) as u32;
-        let sub = dyn_img.crop_imm(x0 as u32, y0 as u32, rw, rh);
-        let (_sw, sh) = sub.dimensions();
+        let rect = opencv::core::Rect::new(x0, y0, rw as i32, rh as i32);
+        let sub = mat.roi(rect)
+            .map_err(|e| anyhow::anyhow!("Mat::roi error: {}", e))?
+            .try_clone()?;
+        let sh = rh;
         let ry = if let Some(v) = opts.get("rowOffset").and_then(|v| v.as_i64()) {
             (v as i32).clamp(0, sh.saturating_sub(1) as i32)
         } else {
@@ -2065,8 +2231,9 @@ impl ScriptContext for EngineScriptContext {
             .unwrap_or(0) as u8;
         let tol = ColorTolerance::from(tolerance);
 
-        let (_, dyn_img) = self.get_decoded_frame_for_vision().await?;
-        let (iw, ih) = dyn_img.dimensions();
+        let (_, mat) = self.get_decoded_mat_for_vision().await?;
+        let iw = mat.cols() as u32;
+        let ih = mat.rows() as u32;
 
         let (x_start, y_start, x_end, y_end) = if let Some(roi) = opts.and_then(|o| o.get("roi"))
         {
@@ -2091,10 +2258,11 @@ impl ScriptContext for EngineScriptContext {
         let mut count = 0u32;
         for y in y_start..y_end {
             for x in x_start..x_end {
-                let pixel = dyn_img.get_pixel(x, y);
-                let c = Color::rgb(pixel[0], pixel[1], pixel[2]);
-                if tol.matches(c, target) {
-                    count += 1;
+                if let Ok(pixel) = mat.at_2d::<opencv::core::Vec4b>(y as i32, x as i32) {
+                    let c = Color::rgb(pixel[2], pixel[1], pixel[0]); // BGRA → RGB
+                    if tol.matches(c, target) {
+                        count += 1;
+                    }
                 }
             }
         }
@@ -2909,22 +3077,20 @@ mod tests {
     #[tokio::test]
     async fn test_update_shared_frame_updates_shared_and_counter() {
         let ctx = EngineScriptContext::new(serde_json::json!({}));
-        let frame = CoreCaptureFrame {
-            width: 2,
-            height: 1,
-            data: vec![1, 2, 3, 4, 5, 6, 7, 8],
-            format: PixelFormat::Rgba,
-            timestamp: chrono::Utc::now(),
-            sequence: 0,
-            source: "test_source".to_string(),
-        };
+        let mut frame = CoreCaptureFrame::new(
+            2, 1,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+            PixelFormat::Rgba,
+            "test_source".to_string(),
+        );
+        frame.timestamp = chrono::Utc::now();
 
         ctx.update_shared_frame(frame, 48.5).await;
 
         let cached = ctx.get_cached_frame().await.expect("cached frame");
         assert_eq!(cached.width, 2);
         assert_eq!(cached.height, 1);
-        assert_eq!(cached.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(*cached.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         let shared = ctx.shared_frame.read().await.clone().expect("shared frame");
         assert_eq!(shared.frame_id, 1);
@@ -2946,15 +3112,13 @@ mod tests {
             .to_string()
             .contains("No shared frame available and fallback capture is disabled"));
 
-        let frame = CoreCaptureFrame {
-            width: 1,
-            height: 1,
-            data: vec![10, 20, 30, 40],
-            format: PixelFormat::Rgba,
-            timestamp: chrono::Utc::now(),
-            sequence: 0,
-            source: "loop".to_string(),
-        };
+        let mut frame = CoreCaptureFrame::new(
+            1, 1,
+            vec![10, 20, 30, 40],
+            PixelFormat::Rgba,
+            "loop".to_string(),
+        );
+        frame.timestamp = chrono::Utc::now();
         ctx.update_shared_frame(frame, 30.0).await;
 
         let cached = ctx
@@ -2963,7 +3127,7 @@ mod tests {
             .expect("shared frame should work");
         assert_eq!(cached.width, 1);
         assert_eq!(cached.height, 1);
-        assert_eq!(cached.data, vec![10, 20, 30, 40]);
+        assert_eq!(*cached.data, vec![10, 20, 30, 40]);
     }
 
     #[test]

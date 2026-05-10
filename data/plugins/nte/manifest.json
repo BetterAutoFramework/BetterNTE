@@ -15,7 +15,7 @@
     "fps_cap": 30,
     "hdr_policy": "auto",
     "hdr_to_sdr": true,
-    "method": "print_window",
+    "method": "auto",
     "method_whitelist": [
       "bit_blt",
       "print_window",
@@ -47,7 +47,7 @@
     "triggers_dir": "triggers"
   },
   "scripts": {
-    "auto_update": true,
+    "auto_update": false,
     "data_root": "data",
     "subscriptions": [
       {
@@ -58,7 +58,7 @@
         "url": null
       },
       {
-        "auto_update": true,
+        "auto_update": false,
         "directory": "local",
         "enabled": true,
         "name": "本地源",

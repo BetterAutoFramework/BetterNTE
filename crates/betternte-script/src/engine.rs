@@ -189,6 +189,15 @@ pub trait ScriptContext: Send + Sync {
     async fn ocr_all(&self) -> Result<Vec<OcrResult>>;
     /// Get pixel color at (x, y). Pass `frame` to use an explicit frame, or `None` for cached frame.
     async fn get_color(&self, x: i32, y: i32) -> Result<String>;
+    /// Get pixel colors at multiple points in a single frame decode.
+    /// Each element in `points` is `(x, y)`.
+    async fn get_colors(&self, points: &[(i32, i32)]) -> Result<Vec<String>> {
+        let mut out = Vec::with_capacity(points.len());
+        for &(x, y) in points {
+            out.push(self.get_color(x, y).await?);
+        }
+        Ok(out)
+    }
     /// Compare pixel color at (x, y). Pass `frame` to use an explicit frame, or `None` for cached frame.
     async fn color_match(&self, x: i32, y: i32, color: &str, tolerance: u8) -> Result<bool>;
     /// Compare multiple points and return true only when all points match.
@@ -353,7 +362,7 @@ impl<T: ScriptContext + ?Sized> IpcCallContext for T {}
 pub struct CaptureFrame {
     pub width: u32,
     pub height: u32,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -851,10 +860,10 @@ mod tests {
         let frame = CaptureFrame {
             width: 2,
             height: 2,
-            data: vec![0, 0, 0, 255],
+            data: Arc::new(vec![0, 0, 0, 255]),
         };
         let cloned = frame.clone();
         assert_eq!(cloned.width, 2);
-        assert_eq!(cloned.data, vec![0, 0, 0, 255]);
+        assert_eq!(*cloned.data, vec![0, 0, 0, 255]);
     }
 }

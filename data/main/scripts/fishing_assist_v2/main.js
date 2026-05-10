@@ -1054,7 +1054,12 @@ async function start1() {
 
     const c1 = await ctx.countColor('#FFFFFF', { roi: { x: 1708, y: 892, width: 257, height: 327 }});
     const c2 = await ctx.countColor('#207CFF', { roi: { x: 1708, y: 892, width: 257, height: 327 }});
+    const c5 = await ctx.countColor('#2CCCAF', { roi: { x: 565, y: 11, width: 888, height: 232 }});
+
     if (c1 >= 300 && c2 >= 300) {
+      hookedStreak += 1;
+      break
+    } else if (c5 >= 100) {
       hookedStreak += 1;
       break
     } else {

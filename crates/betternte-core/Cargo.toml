@@ -15,6 +15,7 @@ thiserror.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6.0"
 image = "0.25"
+opencv = { workspace = true }
 tokio.workspace = true
 async-trait.workspace = true
 
