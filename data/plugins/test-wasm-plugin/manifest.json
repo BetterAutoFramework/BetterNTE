@@ -1,8 +1,0 @@
-{
-  "id": "test-wasm-plugin",
-  "name": "Test WASM Plugin",
-  "version": "1.0.0",
-  "description": "A test WASM plugin with add and greet methods",
-  "type": "wasm",
-  "entry": "plugin.wasm"
-}

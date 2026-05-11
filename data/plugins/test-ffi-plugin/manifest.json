@@ -1,8 +1,0 @@
-{
-  "id": "test-ffi-plugin",
-  "name": "Test FFI Plugin",
-  "version": "1.0.0",
-  "description": "A test native plugin with add and greet methods",
-  "type": "ffi",
-  "entry": "plugin.so"
-}
