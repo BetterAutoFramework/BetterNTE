@@ -18,6 +18,8 @@ tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
+wasmtime.workspace = true
+libloading.workspace = true
 semver = "1.0"
 
 [dev-dependencies]

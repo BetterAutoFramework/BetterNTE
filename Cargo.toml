@@ -17,7 +17,7 @@ members = [
 exclude = ["tools/window-pixel-studio/src-tauri"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 license = "GPL-3.0-only"
 repository = "https://github.com/BetterAutoFramework/BetterNTE"
@@ -36,7 +36,7 @@ betternte-engine = { path = "crates/betternte-engine" }
 betternte-runtime = { path = "crates/betternte-runtime" }
 betternte-script = { path = "crates/betternte-script" }
 
-# 异步运行时
+# 异步运行
 tokio = { version = "1.52", features = ["full"] }
 
 # 序列化
@@ -76,12 +76,15 @@ adb_client = "3.2"
 # JS 引擎
 rquickjs = { version = "0.11", features = ["full-async", "parallel"] }
 
-# HTTP 服务器
+# WASM 引擎
+wasmtime = { version = "29", default-features = false, features = ["cranelift", "runtime"] }
+
+# HTTP 服务
 axum = "0.8"
 tower = "0.5"
 tower-http = "0.6"
 
-# HTTP 客户端
+# HTTP 客户
 reqwest = { version = "0.12", features = ["json"] }
 
 # WebSocket
@@ -92,3 +95,6 @@ config = "0.15"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
+
+# FFI
+libloading = "0.8"

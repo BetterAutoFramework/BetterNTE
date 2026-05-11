@@ -384,106 +384,63 @@ impl Engine {
         self.get_task_group_progress().await
     }
 
-    /// 从所有已启用订阅源的 task-groups 目录加载任务组。
+    /// Load task groups from all enabled subscriptions across all data roots.
     ///
     /// Returns `true` if orphan task-group hotkeys were removed from config.
-    pub(super) fn load_task_groups(&mut self) -> bool {
-        let data_root = self.data_root();
+    pub fn load_task_groups(&mut self) -> bool {
         self.task_groups = Vec::new();
         let parser = FlowParser::new();
         let subscriptions = self.config.scripts.subscriptions.clone();
 
-        if let Some(plugin_root) = self.active_plugin_root() {
-            let dir = plugin_root.join("task-groups");
-            let source = format!("插件:{}", self.active_plugin_id());
-            if dir.exists() {
-                for path in collect_json_files_recursive(&dir) {
+        for sub in &subscriptions {
+            if !sub.enabled {
+                continue;
+            }
+            let sub_path = format!("{}/task-groups", sub.directory);
+            let entries = self.data_root.collect_entries(&sub_path);
+            for (_relative, absolute) in entries {
+                if !absolute.is_dir() {
+                    continue;
+                }
+                for path in collect_json_files_recursive(&absolute) {
                     match std::fs::read_to_string(&path) {
                         Ok(content) => match serde_json::from_str::<Group>(&content) {
                             Ok(mut group) => {
                                 if group.source.is_none() {
-                                    group.source = Some(source.clone());
+                                    group.source = Some(sub.name.clone());
                                 }
-                                info!(name = %group.name, source = %source, "Plugin task group loaded");
+                                info!(name = %group.name, source = %sub.name, "Task group loaded");
                                 if let Ok(flow) = parser.parse_group(&group) {
                                     self.upsert_flow_in_memory(flow.clone());
                                     self.persist_legacy_flow_if_needed(&flow);
                                 }
                                 self.task_groups.push(group);
                             }
-                            Err(e) => match serde_json::from_str::<Vec<Group>>(&content) {
-                                Ok(groups) => {
-                                    info!(count = groups.len(), source = %source, "Plugin task groups loaded (array format)");
-                                    for mut group in groups {
-                                        if group.source.is_none() {
-                                            group.source = Some(source.clone());
+                            Err(e) => {
+                                // Try parsing as array format (legacy task_groups.json)
+                                match serde_json::from_str::<Vec<Group>>(&content) {
+                                    Ok(groups) => {
+                                        info!(count = groups.len(), source = %sub.name, "Task groups loaded (array format)");
+                                        for mut group in groups {
+                                            if group.source.is_none() {
+                                                group.source = Some(sub.name.clone());
+                                            }
+                                            if let Ok(flow) = parser.parse_group(&group) {
+                                                self.upsert_flow_in_memory(flow.clone());
+                                                self.persist_legacy_flow_if_needed(&flow);
+                                            }
+                                            self.task_groups.push(group);
                                         }
-                                        if let Ok(flow) = parser.parse_group(&group) {
-                                            self.upsert_flow_in_memory(flow.clone());
-                                            self.persist_legacy_flow_if_needed(&flow);
-                                        }
-                                        self.task_groups.push(group);
+                                    }
+                                    Err(_) => {
+                                        warn!(file = %path.display(), error = %e, "Failed to parse task group file");
                                     }
                                 }
-                                Err(_) => {
-                                    warn!(file = %path.display(), error = %e, "Failed to parse plugin task group file");
-                                }
-                            },
+                            }
                         },
                         Err(e) => {
-                            warn!(file = %path.display(), error = %e, "Failed to read plugin task group file");
+                            warn!(file = %path.display(), error = %e, "Failed to read task group file");
                         }
-                    }
-                }
-            }
-        }
-
-        for sub in &subscriptions {
-            if !sub.enabled {
-                continue;
-            }
-            let dir = data_root.join(&sub.directory).join("task-groups");
-            if !dir.exists() {
-                continue;
-            }
-            for path in collect_json_files_recursive(&dir) {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => match serde_json::from_str::<Group>(&content) {
-                        Ok(mut group) => {
-                            if group.source.is_none() {
-                                group.source = Some(sub.name.clone());
-                            }
-                            info!(name = %group.name, source = %sub.name, "Task group loaded");
-                            if let Ok(flow) = parser.parse_group(&group) {
-                                self.upsert_flow_in_memory(flow.clone());
-                                self.persist_legacy_flow_if_needed(&flow);
-                            }
-                            self.task_groups.push(group);
-                        }
-                        Err(e) => {
-                            // 尝试解析为数组格式（兼容旧的 task_groups.json）
-                            match serde_json::from_str::<Vec<Group>>(&content) {
-                                Ok(groups) => {
-                                    info!(count = groups.len(), source = %sub.name, "Task groups loaded (array format)");
-                                    for mut group in groups {
-                                        if group.source.is_none() {
-                                            group.source = Some(sub.name.clone());
-                                        }
-                                        if let Ok(flow) = parser.parse_group(&group) {
-                                            self.upsert_flow_in_memory(flow.clone());
-                                            self.persist_legacy_flow_if_needed(&flow);
-                                        }
-                                        self.task_groups.push(group);
-                                    }
-                                }
-                                Err(_) => {
-                                    warn!(file = %path.display(), error = %e, "Failed to parse task group file");
-                                }
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        warn!(file = %path.display(), error = %e, "Failed to read task group file");
                     }
                 }
             }
@@ -497,57 +454,36 @@ impl Engine {
         pruned
     }
 
-    /// 从所有已启用订阅源的 flows 目录加载工作流定义。
-    pub(super) fn load_flows(&mut self) {
-        let data_root = self.data_root();
+    /// Load flow definitions from all enabled subscriptions across all data roots.
+    pub fn load_flows(&mut self) {
         self.flows_store = Vec::new();
         let parser = FlowParser::new();
         let subscriptions = self.config.scripts.subscriptions.clone();
-
-        if let Some(plugin_root) = self.active_plugin_root() {
-            let dir = plugin_root.join("flows");
-            let source = format!("插件:{}", self.active_plugin_id());
-            if dir.exists() {
-                for path in collect_json_files_recursive(&dir) {
-                    match std::fs::read_to_string(&path) {
-                        Ok(content) => match parser.parse_or_convert_to_flow(&content) {
-                            Ok(flow) => {
-                                info!(id = %flow.id, name = %flow.name, source = %source, "Plugin flow loaded");
-                                self.upsert_flow_in_memory(flow);
-                            }
-                            Err(e) => {
-                                warn!(file = %path.display(), error = %e, "Failed to parse plugin flow file");
-                            }
-                        },
-                        Err(e) => {
-                            warn!(file = %path.display(), error = %e, "Failed to read plugin flow file");
-                        }
-                    }
-                }
-            }
-        }
 
         for sub in &subscriptions {
             if !sub.enabled {
                 continue;
             }
-            let dir = data_root.join(&sub.directory).join("flows");
-            if !dir.exists() {
-                continue;
-            }
-            for path in collect_json_files_recursive(&dir) {
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => match parser.parse_or_convert_to_flow(&content) {
-                        Ok(flow) => {
-                            info!(id = %flow.id, name = %flow.name, source = %sub.name, "Flow loaded");
-                            self.upsert_flow_in_memory(flow);
-                        }
+            let sub_path = format!("{}/flows", sub.directory);
+            let entries = self.data_root.collect_entries(&sub_path);
+            for (_relative, absolute) in entries {
+                if !absolute.is_dir() {
+                    continue;
+                }
+                for path in collect_json_files_recursive(&absolute) {
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => match parser.parse_or_convert_to_flow(&content) {
+                            Ok(flow) => {
+                                info!(id = %flow.id, name = %flow.name, source = %sub.name, "Flow loaded");
+                                self.upsert_flow_in_memory(flow);
+                            }
+                            Err(e) => {
+                                warn!(file = %path.display(), error = %e, "Failed to parse flow file");
+                            }
+                        },
                         Err(e) => {
-                            warn!(file = %path.display(), error = %e, "Failed to parse flow file");
+                            warn!(file = %path.display(), error = %e, "Failed to read flow file");
                         }
-                    },
-                    Err(e) => {
-                        warn!(file = %path.display(), error = %e, "Failed to read flow file");
                     }
                 }
             }
@@ -623,12 +559,14 @@ impl Engine {
         }
 
         let mut roots: Vec<PathBuf> = Vec::new();
-        if let Some(plugin_root) = self.active_plugin_root() {
-            roots.push(plugin_root.join("task-groups"));
-        }
-        let data_root = self.data_root();
         for sub in &self.config.scripts.subscriptions {
-            roots.push(data_root.join(&sub.directory).join("task-groups"));
+            let sub_path = format!("{}/task-groups", sub.directory);
+            let entries = self.data_root.collect_entries(&sub_path);
+            for (_relative, absolute) in entries {
+                if absolute.is_dir() {
+                    roots.push(absolute);
+                }
+            }
         }
 
         for root in roots {
@@ -653,40 +591,31 @@ impl Engine {
         Ok(())
     }
 
-    /// 删除工作流文件。
+    /// Delete flow file.
     ///
     /// Returns `true` if orphan task-group hotkeys were removed from config.
     pub fn delete_flow(&mut self, flow_id: &str) -> Result<bool> {
-        let data_root = self.data_root();
-
-        // Same directory as [`save_flow`] — must not depend on subscription `enabled`, otherwise delete misses disk.
+        // Same directory as save_flow — must not depend on subscription enabled, otherwise delete misses disk.
         let primary = flow_json_path(&self.default_flows_dir(), flow_id);
         if primary.exists() {
             std::fs::remove_file(&primary)?;
             info!(id = %flow_id, path = %primary.display(), "Flow file deleted (default flows dir)");
         }
 
-        if let Some(plugin_root) = self.active_plugin_root() {
-            let path = flow_json_path(&plugin_root.join("flows"), flow_id);
-            if path.exists() {
-                std::fs::remove_file(&path)?;
-                info!(id = %flow_id, path = %path.display(), "Flow file deleted (plugin flows)");
-            }
-        }
-
         for sub in &self.config.scripts.subscriptions {
-            let path = data_root
-                .join(&sub.directory)
-                .join("flows")
-                .join(format!("{}.json", flow_id));
-            if path.exists() && path != primary {
-                std::fs::remove_file(&path)?;
-                info!(
-                    id = %flow_id,
-                    path = %path.display(),
-                    subscription = %sub.directory,
-                    "Flow file deleted"
-                );
+            let sub_path = format!("{}/flows", sub.directory);
+            let entries = self.data_root.collect_entries(&sub_path);
+            for (_relative, absolute) in entries {
+                let path = absolute.join(format!("{}.json", flow_id));
+                if path.exists() && path != primary {
+                    std::fs::remove_file(&path)?;
+                    info!(
+                        id = %flow_id,
+                        path = %path.display(),
+                        subscription = %sub.directory,
+                        "Flow file deleted"
+                    );
+                }
             }
         }
 

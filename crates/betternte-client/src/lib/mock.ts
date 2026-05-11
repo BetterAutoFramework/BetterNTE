@@ -262,7 +262,6 @@ export const mockConfig: EngineConfig = {
     font_size: 14,
   },
   scripts: {
-    data_root: "data",
     auto_update: true,
     subscriptions: [
       { name: "官方源", directory: "main", enabled: true, auto_update: true },
@@ -341,8 +340,7 @@ export const mockConfig: EngineConfig = {
   security: {
     mode: "normal",
   },
-  active_plugin: "nte",
-  plugin_search_paths: ["data/plugins"],
+  plugins: {},
 };
 
 export const mockStoreScripts: StoreScript[] = [

@@ -169,20 +169,34 @@ export interface EngineConfig {
   advanced: AdvancedConfig;
   replay: ReplayConfig;
   security: SecurityConfig;
-  active_plugin: string;
-  plugin_search_paths: string[];
-}
-
-export interface GamePluginInfo {
-  id: string;
-  name: string;
-  version: string;
-  manifest_path: string;
+  /** Plugin states keyed by plugin ID (enable/disable + user config). */
+  plugins: Record<string, PluginState>;
 }
 
 export interface TriggerState {
   enabled: boolean;
   params: Record<string, unknown>;
+}
+
+/** Per-plugin state stored in config. */
+export interface PluginState {
+  enabled: boolean;
+  config: Record<string, unknown>;
+}
+
+/** Info about a discovered or loaded plugin. */
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  /** Plugin type: "js", "wasm", or "ffi". */
+  type: string;
+  methods: string[];
+  /** Optional JSON schema for plugin configuration. */
+  config_schema?: Record<string, unknown>;
+  /** Whether this plugin is currently enabled and loaded. */
+  enabled: boolean;
 }
 
 export interface CaptureConfig {
@@ -277,7 +291,6 @@ export interface Subscription {
 }
 
 export interface ScriptConfig {
-  data_root: string;
   auto_update: boolean;
   subscriptions: Subscription[];
 }

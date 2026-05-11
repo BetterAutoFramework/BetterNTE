@@ -25,13 +25,11 @@ impl Engine {
         before != self.config.hotkey_triggers.scripts.len()
     }
 
-    /// 重新扫描所有已启用订阅源的脚本和触发器目录。
+    /// Reload all scripts and triggers from all enabled subscriptions across all data roots.
     ///
     /// Returns `true` if orphan script hotkeys were removed from config.
     pub fn reload_scripts(&mut self) -> bool {
-        let data_root = self.data_root();
-
-        // 如果 subscriptions 为空，使用默认值
+        // If subscriptions is empty, use defaults
         if self.config.scripts.subscriptions.is_empty() {
             warn!("subscriptions is empty, falling back to default (官方源)");
             self.config.scripts.subscriptions =
@@ -39,74 +37,57 @@ impl Engine {
         }
 
         info!(
-            data_root = %data_root.display(),
             subscriptions = self.config.scripts.subscriptions.len(),
-            data_root_config = %self.config.scripts.data_root,
+            data_roots = self.data_root.roots().len(),
             "reload_scripts: starting scan"
         );
 
         self.scripts_store = Vec::new();
         self.triggers_store = Vec::new();
 
-        if let Some(plugin_root) = self.active_plugin_root() {
-            info!(
-                plugin = %self.active_plugin_id(),
-                root = %plugin_root.display(),
-                "Scanning active plugin scripts/triggers first"
-            );
-            let source = format!("插件:{}", self.active_plugin_id());
-            let plugin_scripts_dir = plugin_root.join("scripts");
-            self.scripts_store.extend(super::loader::load_scripts(
-                &plugin_scripts_dir,
-                &source,
-                &data_root,
-            ));
-            let plugin_triggers_dir = plugin_root.join("triggers");
-            self.triggers_store.extend(super::loader::load_scripts(
-                &plugin_triggers_dir,
-                &source,
-                &data_root,
-            ));
-        } else {
-            info!(
-                plugin = %self.active_plugin_id(),
-                "Active plugin manifest not found, fallback to subscriptions only"
-            );
-        }
-
         for sub in &self.config.scripts.subscriptions {
             if !sub.enabled {
                 info!(name = %sub.name, dir = %sub.directory, "Skipping disabled subscription");
                 continue;
             }
-            let base = data_root.join(&sub.directory);
             let source = &sub.name;
 
-            info!(
-                name = %sub.name,
-                dir = %sub.directory,
-                base = %base.display(),
-                base_exists = base.exists(),
-                "Scanning subscription"
-            );
+            // Scan scripts/ and triggers/ across all data roots
+            for suffix in &["scripts", "triggers"] {
+                let sub_path = format!("{}/{}", sub.directory, suffix);
+                let mut seen_dirs = std::collections::HashSet::new();
+                for root in self.data_root.roots().iter().rev() {
+                    let dir = root.join(&sub_path);
+                    if !dir.is_dir() {
+                        continue;
+                    }
+                    // Canonicalize to deduplicate equivalent paths on Windows
+                    let canonical = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+                    if !seen_dirs.insert(canonical) {
+                        continue;
+                    }
+                    info!(
+                        path = %dir.display(),
+                        "Scanning {} directory", suffix
+                    );
+                    let store = if *suffix == "scripts" {
+                        &mut self.scripts_store
+                    } else {
+                        &mut self.triggers_store
+                    };
+                    store.extend(super::loader::load_scripts(
+                        &dir,
+                        source,
+                        root,
+                    ));
+                }
+            }
+        }
 
-            // 加载 scripts/
-            let scripts_dir = base.join("scripts");
-            info!(path = %scripts_dir.display(), exists = scripts_dir.exists(), "Checking scripts dir");
-            self.scripts_store.extend(super::loader::load_scripts(
-                &scripts_dir,
-                source,
-                &data_root,
-            ));
-
-            // 加载 triggers/
-            let triggers_dir = base.join("triggers");
-            info!(path = %triggers_dir.display(), exists = triggers_dir.exists(), "Checking triggers dir");
-            self.triggers_store.extend(super::loader::load_scripts(
-                &triggers_dir,
-                source,
-                &data_root,
-            ));
+        // Deduplicate scripts/triggers by ID (higher-priority source wins)
+        for store in [&mut self.scripts_store, &mut self.triggers_store] {
+            let mut seen_ids = std::collections::HashSet::new();
+            store.retain(|e| seen_ids.insert(e.manifest.name.clone()));
         }
 
         // 发布 ScriptLoaded 事件
@@ -422,21 +403,24 @@ async function main(ctx) {{
         Ok(())
     }
 
-    /// 删除脚本/触发器目录及其所有文件。
+    /// Delete a script/trigger directory and all its files.
     ///
     /// Returns `true` if orphan script hotkeys were removed from config.
     pub async fn delete_script(&mut self, name: &str) -> Result<bool> {
-        let data_root = self.data_root();
         for sub in &self.config.scripts.subscriptions {
             if !sub.enabled {
                 continue;
             }
             for sub_dir in &["scripts", "triggers"] {
-                let path = data_root.join(&sub.directory).join(sub_dir).join(name);
-                if path.exists() {
-                    std::fs::remove_dir_all(&path)?;
-                    info!(name = %name, path = %path.display(), "Script directory deleted");
-                    break;
+                let sub_path = format!("{}/{}", sub.directory, sub_dir);
+                let entries = self.data_root.collect_entries(&sub_path);
+                for (_relative, absolute) in entries {
+                    let path = absolute.join(name);
+                    if path.exists() {
+                        std::fs::remove_dir_all(&path)?;
+                        info!(name = %name, path = %path.display(), "Script directory deleted");
+                        break;
+                    }
                 }
             }
         }
@@ -460,18 +444,20 @@ async function main(ctx) {{
         }
     }
 
-    /// 列出脚本目录下的所有文件（不含子目录）。
+    /// List all files in a script directory (not subdirectories).
     pub fn list_script_files(&self, script_dir: &str) -> Result<Vec<String>> {
-        let full_path = self.data_root().join(script_dir);
-        // Security: validate the resolved path is within data_root
+        let full_path = self.data_root.resolve(std::path::Path::new(script_dir));
+        // Security: validate the resolved path is within one of the data roots
         let canonical = full_path
             .canonicalize()
             .map_err(|e| anyhow::anyhow!("Directory not found: {}", e))?;
-        let canonical_base = self
-            .data_root()
-            .canonicalize()
-            .map_err(|e| anyhow::anyhow!("Data root error: {}", e))?;
-        if !canonical.starts_with(&canonical_base) {
+        let is_within_root = self
+            .data_root
+            .roots()
+            .iter()
+            .filter_map(|r| r.canonicalize().ok())
+            .any(|cr| canonical.starts_with(&cr));
+        if !is_within_root {
             bail!("Path traversal detected");
         }
         let entries = std::fs::read_dir(&canonical)?;

@@ -212,18 +212,12 @@ pub(crate) fn try_start_replay_recording(
     }
     let root = config.replay.artifact_root.trim();
     let session = config.replay.session_name.trim();
-    let plugin_id = if config.active_plugin.trim().is_empty() {
-        "nte"
-    } else {
-        config.active_plugin.trim()
-    };
     if root.is_empty() || session.is_empty() {
         warn!("replay.record skipped: artifact_root or session_name is empty");
         return Ok(None);
     }
 
     let session_dir = Engine::resolve_path(root, base_dir)
-        .join(plugin_id)
         .join(session);
     std::fs::create_dir_all(&session_dir)
         .with_context(|| format!("replay record mkdir {:?}", session_dir.display()))?;

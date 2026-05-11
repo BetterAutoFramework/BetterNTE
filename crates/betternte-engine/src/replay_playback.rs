@@ -17,7 +17,6 @@ use crate::Engine;
 pub(crate) fn discover_replay_frames(
     base_dir: &Path,
     replay: &betternte_core::ReplayConfig,
-    active_plugin: &str,
 ) -> anyhow::Result<Vec<PathBuf>> {
     if replay.mode != ReplayMode::Replay {
         return Ok(Vec::new());
@@ -31,13 +30,7 @@ pub(crate) fn discover_replay_frames(
         );
     }
 
-    let plugin_id = if active_plugin.trim().is_empty() {
-        "nte"
-    } else {
-        active_plugin.trim()
-    };
     let session_dir = Engine::resolve_path(root, base_dir)
-        .join(plugin_id)
         .join(session);
     if !session_dir.is_dir() {
         anyhow::bail!(

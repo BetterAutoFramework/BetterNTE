@@ -39,10 +39,9 @@ pub struct EngineConfig {
     pub replay: ReplayConfig,
     #[serde(default)]
     pub security: SecurityConfig,
-    #[serde(default = "default_active_plugin")]
-    pub active_plugin: String,
-    #[serde(default = "default_plugin_search_paths")]
-    pub plugin_search_paths: Vec<String>,
+    /// Plugin states keyed by plugin ID (enable/disable + user config).
+    #[serde(default)]
+    pub plugins: HashMap<String, PluginState>,
 }
 
 impl Default for EngineConfig {
@@ -62,8 +61,7 @@ impl Default for EngineConfig {
             advanced: AdvancedConfig::default(),
             replay: ReplayConfig::default(),
             security: SecurityConfig::default(),
-            active_plugin: default_active_plugin(),
-            plugin_search_paths: default_plugin_search_paths(),
+            plugins: HashMap::new(),
         }
     }
 }
@@ -432,8 +430,6 @@ pub struct Subscription {
 /// Script roots and subscription list.
 #[derive(Debug, Clone, Serialize)]
 pub struct ScriptConfig {
-    /// Data root directory (default `"data"`).
-    pub data_root: String,
     pub auto_update: bool,
     /// Registered subscriptions.
     pub subscriptions: Vec<Subscription>,
@@ -442,7 +438,6 @@ pub struct ScriptConfig {
 impl Default for ScriptConfig {
     fn default() -> Self {
         Self {
-            data_root: "data".into(),
             auto_update: false,
             subscriptions: vec![
                 Subscription {
@@ -477,7 +472,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
         #[derive(Deserialize)]
         #[serde(field_identifier, rename_all = "snake_case")]
         enum Field {
-            DataRoot,
             Directory,
             TriggersDirectory,
             TaskGroupsDirectory,
@@ -486,6 +480,7 @@ impl<'de> Deserialize<'de> for ScriptConfig {
             AutoUpdate,
             Subscriptions,
             Repos,
+            DataRoot,
         }
 
         struct ScriptConfigVisitor;
@@ -501,7 +496,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
             where
                 M: MapAccess<'de>,
             {
-                let mut data_root: Option<String> = None;
                 let mut _directory: Option<String> = None;
                 let mut auto_update = false;
                 let mut subscriptions: Option<Vec<Subscription>> = None;
@@ -509,16 +503,14 @@ impl<'de> Deserialize<'de> for ScriptConfig {
 
                 while let Some(key) = map.next_key()? {
                     match key {
-                        Field::DataRoot => {
-                            data_root = Some(map.next_value()?);
-                        }
                         Field::Directory => {
                             _directory = Some(map.next_value()?);
                         }
                         Field::TriggersDirectory
                         | Field::TaskGroupsDirectory
                         | Field::FlowsDirectory
-                        | Field::AssetsDirectory => {
+                        | Field::AssetsDirectory
+                        | Field::DataRoot => {
                             // Ignore deprecated keys but consume their values.
                             let _: String = map.next_value()?;
                         }
@@ -537,7 +529,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
                 // Modern layout: subscriptions array present.
                 if let Some(subs) = subscriptions {
                     return Ok(ScriptConfig {
-                        data_root: data_root.unwrap_or_else(|| "data".into()),
                         auto_update,
                         subscriptions: subs,
                     });
@@ -562,7 +553,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
                         })
                         .collect();
                     return Ok(ScriptConfig {
-                        data_root: data_root.unwrap_or_else(|| "data".into()),
                         auto_update,
                         subscriptions: subs,
                     });
@@ -570,7 +560,6 @@ impl<'de> Deserialize<'de> for ScriptConfig {
 
                 // Oldest layout: only generic directory metadata.
                 Ok(ScriptConfig {
-                    data_root: data_root.unwrap_or_else(|| "data".into()),
                     auto_update,
                     subscriptions: ScriptConfig::default().subscriptions,
                 })
@@ -912,18 +901,34 @@ impl Default for TriggerState {
     }
 }
 
+/// Per-plugin state stored in config file.
+///
+/// Tracks whether a discovered plugin is enabled and holds user-configured
+/// parameters that the plugin can read via `ctx.getConfig()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginState {
+    /// Whether this plugin is enabled (loaded on startup).
+    /// Defaults to `false` so newly discovered plugins require explicit opt-in.
+    #[serde(default)]
+    pub enabled: bool,
+    /// User-configured parameters for this plugin (schema defined by `config_schema` in manifest).
+    #[serde(default)]
+    pub config: serde_json::Value,
+}
+
+impl Default for PluginState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            config: serde_json::Value::Object(serde_json::Map::new()),
+        }
+    }
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
 
 fn default_true() -> bool {
     true
-}
-
-fn default_active_plugin() -> String {
-    "nte".to_string()
-}
-
-fn default_plugin_search_paths() -> Vec<String> {
-    vec!["plugins".to_string()]
 }

@@ -78,6 +78,11 @@ pub enum EngineEvent {
         duration_ms: u64,
         timestamp: DateTime<Utc>,
     },
+
+    /// Emitted by the file system watcher when data files change on disk.
+    /// The client should call `reload_scripts()`, `load_task_groups()`, and
+    /// `load_flows()` in response.
+    DataChanged,
 }
 
 /// 任务停止原因。

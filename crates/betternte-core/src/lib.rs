@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod config;
 pub mod consts;
+pub mod data_root;
 pub mod error;
 pub mod event;
 pub mod image;
@@ -14,6 +15,7 @@ pub mod script;
 pub mod task;
 pub mod vision;
 pub mod window;
+pub mod notify_trait;
 
 // 重导出常用类型
 pub use config::CaptureMethod;
@@ -24,6 +26,7 @@ pub use config::{
     OverlayMode, ScriptConfig, SecurityConfig, SecurityMode, ServerChanConfig, Subscription,
     TelegramConfig,
 };
+pub use data_root::DataRoot;
 pub use consts::*;
 pub use error::{CoreError, Result};
 pub use event::{EngineEvent, ErrorSeverity, TaskStopReason};
@@ -33,6 +36,9 @@ pub use replay::{
     ReplayManifestExpect, ReplayMode, ReplaySessionMetaInputPipelineExpect,
 };
 pub use window::{GameWindow, Rect, Size};
+
+// notify_trait module re-exports
+pub use notify_trait::{ChannelInfo, NotifyError, NotificationManager, Notifier};
 
 // capture 模块重导出
 pub use capture::{CaptureRuntimeOptions, CaptureTarget, ScreenCapture, WindowFinder};

@@ -13,6 +13,7 @@ import {
   Layers,
   Loader2,
   Plus,
+  Puzzle,
   Settings2,
   Shield,
   Trash2,
@@ -32,8 +33,8 @@ import { mapEngineConfig, useEngineStore } from "@/lib/store";
 import { invokeAction } from "@/lib/stores/helpers";
 import type {
   EngineConfig,
-  GamePluginInfo,
   HotkeyTriggersConfig,
+  PluginInfo,
   Subscription,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -45,6 +46,7 @@ type SettingsTab =
   | "overlay"
   | "notifications"
   | "scripts"
+  | "plugins"
   | "security"
   | "advanced";
 
@@ -55,6 +57,7 @@ const tabs: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "overlay", label: "叠层", icon: <Layers className="w-4 h-4" /> },
   { id: "notifications", label: "通知", icon: <Bell className="w-4 h-4" /> },
   { id: "scripts", label: "脚本", icon: <Code className="w-4 h-4" /> },
+  { id: "plugins", label: "插件", icon: <Puzzle className="w-4 h-4" /> },
   { id: "security", label: "安全", icon: <Shield className="w-4 h-4" /> },
   {
     id: "advanced",
@@ -165,19 +168,6 @@ function updateConfig(
   };
 }
 
-type RootConfigField = "active_plugin" | "plugin_search_paths";
-
-function updateRootConfig(
-  config: EngineConfig,
-  field: RootConfigField,
-  value: unknown
-): EngineConfig {
-  return {
-    ...config,
-    [field]: value,
-  };
-}
-
 // ============================================================================
 // File/Directory Picker Button
 // ============================================================================
@@ -229,91 +219,11 @@ function FolderPicker({
 
 function GeneralSettings({
   config,
-  onRootChange,
 }: {
   config: EngineConfig;
-  onRootChange: (field: RootConfigField, value: unknown) => void;
 }) {
-  const [plugins, setPlugins] = useState<GamePluginInfo[]>([]);
-  const [pluginsLoading, setPluginsLoading] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    setPluginsLoading(true);
-    void invokeAction<GamePluginInfo[]>("list_game_plugins", undefined, { silent: true })
-      .then((list) => {
-        if (alive && Array.isArray(list)) {
-          setPlugins(list);
-        }
-      })
-      .finally(() => {
-        if (alive) setPluginsLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [config.plugin_search_paths, config.scripts.data_root]);
-
-  const handleActivePluginChange = (nextPluginId: string) => {
-    const currentPluginId = config.active_plugin || "nte";
-    if (nextPluginId === currentPluginId) return;
-    const ok = window.confirm(
-      `切换插件将从「${nextPluginId}」的 manifest 回填并覆盖当前的游戏设置、截图配置、脚本目录与订阅源配置。\n\n是否继续？`
-    );
-    if (!ok) return;
-    onRootChange("active_plugin", nextPluginId);
-  };
-
   return (
     <>
-      <CardExpander
-        icon={<Globe className="w-4 h-4" />}
-        title="插件设置"
-        description="选择游戏插件与搜索路径（通用框架预留）"
-        defaultOpen={true}
-      >
-        <SettingRow label="当前插件" description="当前正在使用的游戏插件">
-          <SelectInput
-            value={config.active_plugin || "nte"}
-            onChange={handleActivePluginChange}
-            options={[
-              ...(plugins.length > 0
-                ? plugins.map((p) => ({
-                    label: `${p.name} (${p.id})`,
-                    value: p.id,
-                  }))
-                : [{ label: "异环 (默认)", value: "nte" }]),
-              ...(!plugins.some((p) => p.id === config.active_plugin) && config.active_plugin
-                ? [{ label: `${config.active_plugin} (手动)`, value: config.active_plugin }]
-                : []),
-            ]}
-          />
-        </SettingRow>
-        <SettingRow
-          label="插件搜索路径"
-          description="脚本搜索路径。可填写多个，用英文逗号分隔。"
-        >
-          <TextInput
-            value={(config.plugin_search_paths ?? []).join(", ")}
-            onChange={(v) =>
-              onRootChange(
-                "plugin_search_paths",
-                v
-                  .split(",")
-                  .map((s) => s.trim())
-                  .filter(Boolean)
-              )
-            }
-            placeholder="例如：plugins, community/plugins"
-          />
-        </SettingRow>
-        <div className="text-xs text-foreground-tertiary">
-          {pluginsLoading
-            ? "正在扫描插件..."
-            : `已发现 ${plugins.length} 个插件（基于当前 data_root 与搜索路径）`}
-        </div>
-      </CardExpander>
-
       <CardExpander
         icon={<Gamepad2 className="w-4 h-4" />}
         title="游戏设置"
@@ -1054,31 +964,138 @@ function SubscriptionManager({
   );
 }
 
+function ScanDirHint({ type, show = false }: { type: "plugins" | "scripts"; show?: boolean }) {
+  const [dirs, setDirs] = useState<string[]>([]);
+  useEffect(() => {
+    if (!show) return;
+    invokeAction<{ plugins: string[]; scripts: string[] }>("get_scan_dirs")
+      .then((d) => setDirs(d?.[type] ?? []))
+      .catch(() => {});
+  }, [type, show]);
+  if (!show || dirs.length === 0) return null;
+  return (
+    <div className="text-xs text-foreground-tertiary px-1 pb-2 space-y-1">
+      <div className="flex items-center gap-1.5">
+        <FolderOpen className="w-3.5 h-3.5" />
+        <span className="font-medium">
+          {type === "plugins" ? "插件扫描目录" : "脚本/触发器扫描目录"}
+        </span>
+      </div>
+      {dirs.map((d) => (
+        <div key={d} className="ml-5 font-mono break-all opacity-80">{d}</div>
+      ))}
+    </div>
+  );
+}
+
+function PluginSettings({ config, onChange, showScanDirs = false }: { config: EngineConfig; onChange: (section: keyof EngineConfig, field: string, value: unknown) => void; showScanDirs?: boolean }) {
+  const [plugins, setPlugins] = useState<PluginInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    invokeAction<PluginInfo[]>("list_plugins")
+      .then((list) => setPlugins(list ?? []))
+      .catch(() => setPlugins([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleToggle = useCallback(
+    async (pluginId: string, enabled: boolean) => {
+      // Update config
+      const updated = { ...config.plugins, [pluginId]: { ...config.plugins[pluginId], enabled } };
+      onChange("plugins", pluginId, updated[pluginId]);
+      // Notify engine
+      await invokeAction("set_plugin_enabled", { pluginId, enabled }).catch(() => {});
+      // Refresh list
+      invokeAction<PluginInfo[]>("list_plugins").then((list) => setPlugins(list ?? [])).catch(() => {});
+    },
+    [config.plugins, onChange]
+  );
+
+  const handleConfigChange = useCallback(
+    (pluginId: string, key: string, value: unknown) => {
+      const prev = config.plugins[pluginId]?.config ?? {};
+      const updated = { ...config.plugins, [pluginId]: { ...config.plugins[pluginId], config: { ...prev, [key]: value } } };
+      onChange("plugins", pluginId, updated[pluginId]);
+    },
+    [config.plugins, onChange]
+  );
+
+  if (loading) {
+    return <div className="text-sm text-foreground-tertiary">加载插件列表...</div>;
+  }
+
+  if (plugins.length === 0) {
+    return (
+      <CardExpander icon={<Puzzle className="w-4 h-4" />} title="插件管理" description="暂未发现插件。将插件放入以下目录即可。">
+        <ScanDirHint type="plugins" show={showScanDirs} />
+        <div className="text-sm text-foreground-tertiary py-4 text-center">暂无插件</div>
+      </CardExpander>
+    );
+  }
+
+  return (
+    <CardExpander icon={<Puzzle className="w-4 h-4" />} title="插件管理" description="管理已发现的插件，启用/禁用和配置参数">
+      <ScanDirHint type="plugins" show={showScanDirs} />
+      {plugins.map((plugin) => {
+        const state = config.plugins[plugin.id];
+        const isEnabled = state?.enabled ?? false;
+        const pluginConfig = state?.config ?? {};
+        return (
+          <div key={plugin.id} className="border border-border-subtle rounded-lg p-3 mb-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-foreground">
+                  {plugin.name}
+                  <span className="ml-2 text-xs text-foreground-tertiary">v{plugin.version}</span>
+                  <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-surface/80 text-foreground-secondary">{plugin.type}</span>
+                </div>
+                {plugin.description && <div className="text-xs text-foreground-tertiary mt-1">{plugin.description}</div>}
+                {plugin.methods.length > 0 && <div className="text-xs text-foreground-tertiary mt-1">方法: {plugin.methods.join(", ")}</div>}
+              </div>
+              <Toggle checked={isEnabled} onChange={(v) => handleToggle(plugin.id, v)} />
+            </div>
+            {isEnabled && plugin.config_schema && (
+              <div className="mt-3 pt-3 border-t border-border-subtle">
+                <div className="text-xs text-foreground-secondary mb-2">插件配置</div>
+                {Object.entries(plugin.config_schema as Record<string, { type?: string; description?: string; default?: unknown }>).map(([key, schema]) => (
+                  <SettingRow key={key} label={key} description={schema.description}>
+                    {schema.type === "boolean" ? (
+                      <Toggle checked={!!pluginConfig[key]} onChange={(v) => handleConfigChange(plugin.id, key, v)} />
+                    ) : schema.type === "number" ? (
+                      <input type="number" value={(pluginConfig[key] as number) ?? schema.default ?? 0} onChange={(e) => handleConfigChange(plugin.id, key, Number(e.target.value))} className="w-24 bg-surface border border-border-subtle rounded px-2 py-1 text-sm text-foreground" />
+                    ) : (
+                      <input type="text" value={(pluginConfig[key] as string) ?? schema.default ?? ""} onChange={(e) => handleConfigChange(plugin.id, key, e.target.value)} className="w-48 bg-surface border border-border-subtle rounded px-2 py-1 text-sm text-foreground" />
+                    )}
+                  </SettingRow>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </CardExpander>
+  );
+}
+
 function ScriptSettings({
   config,
   onChange,
+  showScanDirs = false,
 }: {
   config: EngineConfig;
   onChange: (section: keyof EngineConfig, field: string, value: unknown) => void;
+  showScanDirs?: boolean;
 }) {
   return (
     <CardExpander
       icon={<Code className="w-4 h-4" />}
       title="订阅管理"
-      description="数据目录与订阅源设置"
+      description="订阅源设置"
       defaultOpen={true}
     >
-      <SettingRow
-        label="数据根目录"
-        description="存放订阅与脚本数据。相对路径：开发版相对仓库根；安装版相对本机应用数据目录（首次启动会从安装包复制自带的 data、assets 到该目录）"
-      >
-        <FolderPicker
-          value={config.scripts.data_root}
-          onChange={(v) => onChange("scripts", "data_root", v)}
-          placeholder="选择数据根目录..."
-          directory
-        />
-      </SettingRow>
+      <ScanDirHint type="scripts" show={showScanDirs} />
       <SettingRow label="自动更新" description="启动时检查订阅源更新">
         <Toggle
           checked={config.scripts.auto_update}
@@ -1568,6 +1585,10 @@ function AdvancedSettings({
 export function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("hotkeys");
   const [debugEnvUnlocked, setDebugEnvUnlocked] = useState(false);
+  const [devMode, setDevMode] = useState(
+    () => localStorage.getItem(DEV_MODE_KEY) === "true"
+  );
+  const showDebugTools = devMode || debugEnvUnlocked;
   /** Bumps after full reset so AdvancedSettings remounts and re-reads developer mode from storage. */
   const [advancedUiResetKey, setAdvancedUiResetKey] = useState(0);
   const config = useEngineStore((s) => s.config);
@@ -1585,6 +1606,13 @@ export function Settings() {
     }).then((v) => {
       setDebugEnvUnlocked(Boolean(v));
     });
+  }, []);
+
+  // Sync devMode from AdvancedSettings toggle
+  useEffect(() => {
+    const handler = (e: Event) => setDevMode((e as CustomEvent<boolean>).detail);
+    window.addEventListener("developer-mode-changed", handler);
+    return () => window.removeEventListener("developer-mode-changed", handler);
   }, []);
 
   // Ensure engine is initialized and config is loaded
@@ -1650,17 +1678,6 @@ export function Settings() {
     [autoSave]
   );
 
-  const handleRootChange = useCallback(
-    (field: RootConfigField, value: unknown) => {
-      setDraft((prev) => {
-        if (!prev) return prev;
-        const updated = updateRootConfig(prev, field, value);
-        autoSave(updated);
-        return updated;
-      });
-    },
-    [autoSave]
-  );
 
   const handleHotkeyTriggersReplace = useCallback(
     (triggers: HotkeyTriggersConfig) => {
@@ -1722,7 +1739,7 @@ export function Settings() {
   const sectionProps = { config: draft, onChange: handleChange };
 
   const tabContent: Record<SettingsTab, React.ReactNode> = {
-    general: <GeneralSettings config={draft} onRootChange={handleRootChange} />,
+    general: <GeneralSettings config={draft} />,
     capture: <CaptureSettings {...sectionProps} />,
     hotkeys: (
       <HotkeySettings
@@ -1732,7 +1749,8 @@ export function Settings() {
     ),
     overlay: <OverlaySettings {...sectionProps} />,
     notifications: <NotificationSettings {...sectionProps} />,
-    scripts: <ScriptSettings {...sectionProps} />,
+    scripts: <ScriptSettings {...sectionProps} showScanDirs={showDebugTools} />,
+    plugins: <PluginSettings config={draft} onChange={handleChange} showScanDirs={showDebugTools} />,
     security: <SecuritySettings {...sectionProps} />,
     advanced: (
       <AdvancedSettings

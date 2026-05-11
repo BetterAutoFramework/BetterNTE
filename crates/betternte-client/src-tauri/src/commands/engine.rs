@@ -2,8 +2,6 @@
 
 use tauri::{AppHandle, Manager};
 
-use betternte_engine::Engine;
-
 use crate::{
     load_config, persist_engine_config_file, resolve_engine_base_dir, save_config,
     seed_bundled_user_data, spawn_event_bridge, AppState, EventBusLayer, EVENT_BRIDGE_HANDLE,
@@ -44,8 +42,16 @@ pub async fn init_engine(
     let base_dir = resolve_engine_base_dir(&app)?;
     seed_bundled_user_data(&app, &base_dir)?;
 
-    let engine =
-        Engine::new(config, base_dir).map_err(|e| format!("Engine creation failed: {}", e))?;
+    // Resolve the install directory (where the exe lives) so bundled data/plugins are discoverable
+    let install_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let mut builder = betternte_engine::EngineBuilder::new(config, base_dir);
+    if let Some(dir) = install_dir {
+        builder = builder.with_install_dir(dir);
+    }
+    let engine = builder.build().map_err(|e| format!("Engine creation failed: {}", e))?;
 
     let event_bus = engine.event_bus().clone();
 
@@ -71,6 +77,57 @@ pub async fn init_engine(
 
     persist_engine_config_file(&state).await?;
     crate::hotkeys::register_hotkeys(&app, &state).await?;
+
+    // Start hot-reload watcher — listens for file changes and triggers reload
+    {
+        let mut guard = state.write_engine("starting hot-reload watcher").await?;
+        if let Some(engine) = guard.as_mut() {
+            let _join = engine.start_hot_reload();
+        }
+    }
+
+    // Spawn a background task that reloads data when DataChanged events arrive.
+    // We subscribe to the event bus here and use the AppHandle to access state later.
+    {
+        let event_bus_guard = state.read_engine("subscribing DataChanged").await?;
+        if let Some(engine) = event_bus_guard.as_ref() {
+            let mut data_changed_rx = engine.event_bus().subscribe();
+            let app_handle = app.clone();
+            drop(event_bus_guard);
+            tokio::spawn(async move {
+                loop {
+                    match data_changed_rx.recv().await {
+                        Ok(betternte_core::EngineEvent::DataChanged) => {
+                            tracing::info!("DataChanged event received, reloading engine data");
+                            let state = app_handle.state::<AppState>();
+                            let mut guard = match state.write_engine("hot-reload").await {
+                                Ok(g) => g,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Could not acquire engine lock for hot-reload");
+                                    continue;
+                                }
+                            };
+                            if let Some(engine) = guard.as_mut() {
+                                engine.reload_scripts();
+                                engine.load_task_groups();
+                                engine.load_flows();
+                                tracing::info!("Hot-reload: scripts/task-groups/flows reloaded");
+                            }
+                        }
+                        Ok(_) => {
+                            // Other events — ignore for this listener
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(skipped = n, "DataChanged listener lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    }
 
     tracing::info!("Engine created (idle)");
     Ok("Engine created".into())

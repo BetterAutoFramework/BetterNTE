@@ -24,13 +24,14 @@ pub mod debug_ctx;
 pub mod event;
 pub mod flow_runner;
 pub mod loader;
-pub mod notify_builder;
+
 mod replay_playback;
 mod replay_recorder;
 pub mod replay_verify;
 pub mod script_ctx;
 pub mod scripts;
 pub mod task_groups;
+mod watcher;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -40,6 +41,7 @@ use tracing::{debug, info};
 use betternte_core::EngineConfig;
 use betternte_runtime::{FlowExecutor, Group};
 
+pub use betternte_notify::create_notification_manager;
 pub use betternte_runtime::Flow;
 pub use builder::EngineBuilder;
 pub use event::EventBus;
@@ -67,6 +69,7 @@ pub struct Engine {
     pub(crate) scripts_store: Vec<loader::ScriptEntry>,
     pub(crate) triggers_store: Vec<loader::ScriptEntry>,
     pub(crate) base_dir: std::path::PathBuf,
+    pub(crate) data_root: betternte_core::DataRoot,
     pub(crate) runtime: Option<Arc<betternte_script::ScriptRuntime>>,
     pub(crate) script_ctx: Option<Arc<script_ctx::EngineScriptContext>>,
     pub(crate) capture_stop: Option<tokio::sync::oneshot::Sender<()>>,
@@ -148,6 +151,12 @@ impl Engine {
             }
         }
 
+        // Load plugins from data roots
+        if let Some(ref ctx) = self.script_ctx {
+            let data_roots = self.data_root.roots().to_vec();
+            ctx.load_plugins(&data_roots, &self.config.plugins).await;
+        }
+
         // Auto-enable triggers from config
         self.sync_trigger_states().await;
 
@@ -165,7 +174,6 @@ impl Engine {
                 Some(replay_playback::discover_replay_frames(
                     &self.base_dir,
                     &self.config.replay,
-                    self.active_plugin_id(),
                 )?)
             }
             betternte_core::ReplayMode::Normal | betternte_core::ReplayMode::Record => {
@@ -390,9 +398,9 @@ impl Engine {
         self.script_ctx.clone()
     }
 
-    /// 获取数据根目录绝对路径。
-    pub fn data_root(&self) -> std::path::PathBuf {
-        Self::resolve_path(&self.config.scripts.data_root, &self.base_dir)
+    /// Get the data root with three-directory merge support.
+    pub fn data_root(&self) -> &betternte_core::DataRoot {
+        &self.data_root
     }
 
     /// Root used to resolve relative paths in config (repo root in dev, per-user data when packaged).
@@ -400,9 +408,9 @@ impl Engine {
         self.base_dir.as_path()
     }
 
-    /// 获取脚本目录绝对路径（兼容旧接口，返回 data_root）。
+    /// Get the primary scripts directory (highest-priority data root).
     pub fn scripts_dir(&self) -> std::path::PathBuf {
-        self.data_root()
+        self.data_root.primary().clone()
     }
 
     /// 按引擎工作区解析配置里的路径片段（绝对路径保持不变，否则相对 `workspace`）。
@@ -426,7 +434,7 @@ impl Engine {
         }
     }
 
-    /// 确保"本地源"订阅存在，并创建目录结构。
+    /// Ensure "local" subscription exists and create directory structure.
     fn ensure_local_subscription(&mut self) {
         let has_local = self
             .config
@@ -448,72 +456,100 @@ impl Engine {
                 });
         }
 
-        // Create directory structure
-        let data_root = self.data_root();
-        for sub_dir in &["scripts", "triggers", "task-groups", "flows"] {
-            let dir = data_root.join("local").join(sub_dir);
-            let _ = std::fs::create_dir_all(&dir);
+        // Create directory structure in the primary data root
+        if let Err(e) = self.data_root.ensure_dirs() {
+            tracing::warn!(error = %e, "Failed to ensure local data directories");
         }
     }
 
-    /// 获取本地源目录（用户新建内容存放处）。
-    pub(crate) fn local_dir(&self, sub_dir: &str) -> std::path::PathBuf {
-        self.data_root().join("local").join(sub_dir)
+    /// Start a background task that watches all data roots for file changes.
+    ///
+    /// When a `.json` or `.js` file is created, modified, or removed, the engine
+    /// reloads scripts, task-groups, and flows after a 500ms debounce window.
+    /// Returns a `JoinHandle` that runs for the lifetime of the engine.
+    pub fn start_hot_reload(&self) -> tokio::task::JoinHandle<()> {
+        let data_roots = self.data_root.roots().to_vec();
+        // Since Engine is behind RwLock in the Tauri client, we cannot call &self
+        // reload methods from the spawned watcher task. Instead, we publish a
+        // DataChanged event on the EventBus; the client-side listener handles reload.
+        let event_bus = self.event_bus.clone();
+
+        tokio::spawn(async move {
+            let (_watcher, mut rx) = match watcher::DataWatcher::new(&data_roots) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to start data watcher");
+                    return;
+                }
+            };
+
+            tracing::info!("Hot-reload watcher started for {} data roots", data_roots.len());
+
+            loop {
+                // Wait for any file change signal
+                if rx.recv().await.is_none() {
+                    tracing::info!("Data watcher channel closed, stopping hot-reload");
+                    break;
+                }
+
+                // Debounce: drain rapid-fire events within 500ms
+                loop {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(500),
+                        rx.recv(),
+                    )
+                    .await
+                    {
+                        Ok(Some(())) => {
+                            // More changes arrived during debounce window, keep draining
+                        }
+                        Ok(None) => {
+                            // Channel closed
+                            return;
+                        }
+                        Err(_) => {
+                            // 500ms elapsed with no more changes — time to reload
+                            break;
+                        }
+                    }
+                }
+
+                tracing::info!("Data directory change detected, triggering reload");
+                let _ = event_bus.publish(betternte_core::EngineEvent::DataChanged);
+            }
+        })
     }
 
-    /// 获取所有已启用订阅源的 scripts/ 和 triggers/ 目录（供 ScriptRuntime 使用）。
+    /// Get the local source directory (for writing user-created content).
+    ///
+    /// Writes target the primary data root (`<base_dir>/data/local/`).
+    pub(crate) fn local_dir(&self, sub_dir: &str) -> std::path::PathBuf {
+        self.data_root.primary().join("local").join(sub_dir)
+    }
+
+    /// Get all enabled subscription scripts/ and triggers/ directories across all data roots.
     pub(crate) fn all_script_dirs(&self) -> Vec<std::path::PathBuf> {
         let mut dirs = Vec::new();
-        if let Some(plugin_root) = self.active_plugin_root() {
-            dirs.push(plugin_root.join("scripts"));
-            dirs.push(plugin_root.join("triggers"));
-        }
-
-        let data_root = self.data_root();
-        dirs.extend(
-            self.config
-                .scripts
-                .subscriptions
-                .iter()
-                .filter(|s| s.enabled)
-                .flat_map(|s| {
-                    let base = data_root.join(&s.directory);
-                    vec![base.join("scripts"), base.join("triggers")]
-                }),
-        );
-
-        dirs
-    }
-
-    /// 当前激活插件 ID（空值时回落为默认值）。
-    pub(crate) fn active_plugin_id(&self) -> &str {
-        let id = self.config.active_plugin.trim();
-        if id.is_empty() {
-            "nte"
-        } else {
-            id
-        }
-    }
-
-    /// 解析当前激活插件根目录（包含 manifest.json）。
-    pub(crate) fn active_plugin_root(&self) -> Option<std::path::PathBuf> {
-        let data_root = self.data_root();
-        for rel in &self.config.plugin_search_paths {
-            let rel = rel.trim();
-            if rel.is_empty() {
+        for sub in &self.config.scripts.subscriptions {
+            if !sub.enabled {
                 continue;
             }
-            let root = if std::path::Path::new(rel).is_absolute() {
-                std::path::PathBuf::from(rel)
-            } else {
-                data_root.join(rel)
-            };
-            let plugin_dir = root.join(self.active_plugin_id());
-            if plugin_dir.join("manifest.json").is_file() {
-                return Some(plugin_dir);
+            for suffix in &["scripts", "triggers"] {
+                let sub_path = format!("{}/{}", sub.directory, suffix);
+                let mut seen = std::collections::HashSet::new();
+                for root in self.data_root.roots().iter().rev() {
+                    let dir = root.join(&sub_path);
+                    if !dir.is_dir() {
+                        continue;
+                    }
+                    let canonical = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+                    if seen.insert(canonical) {
+                        dirs.push(dir);
+                    }
+                }
             }
         }
-        None
+        dirs
     }
 
     /// 更新配置。
@@ -524,10 +560,7 @@ impl Engine {
     pub async fn set_config(&mut self, config: EngineConfig) -> Result<()> {
         let old = self.config.clone();
         let was_running = self.is_running();
-        let data_root_changed = old.scripts.data_root != config.scripts.data_root;
         let subs_changed = old.scripts.subscriptions != config.scripts.subscriptions;
-        let plugin_changed = old.active_plugin != config.active_plugin
-            || old.plugin_search_paths != config.plugin_search_paths;
         let notify_changed = !config_notifications_equal(&old.notifications, &config.notifications);
         let runtime_restart_required = config_runtime_restart_required(&old, &config);
 
@@ -545,14 +578,14 @@ impl Engine {
             ));
         }
         self.ensure_local_subscription();
-        if data_root_changed || subs_changed || plugin_changed {
+        if subs_changed {
             let _ = self.reload_scripts();
             self.load_flows();
             let _ = self.load_task_groups();
         }
         if notify_changed {
             if let Some(ctx) = self.script_ctx.as_ref() {
-                let mgr = notify_builder::build_notification_manager(&self.config.notifications);
+                let mgr = betternte_notify::create_notification_manager(&self.config.notifications);
                 ctx.replace_notification_manager(mgr).await;
                 info!("notification manager rebuilt after config change");
             }

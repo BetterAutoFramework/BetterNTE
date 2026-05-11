@@ -844,6 +844,14 @@ mod tests {
         async fn storage_keys(&self) -> Result<Vec<String>> {
             Ok(vec![])
         }
+
+        async fn plugin_call(&self, _plugin_id: &str, _method: &str, _args_json: &str) -> Result<String> {
+            Err(anyhow::anyhow!("Plugins not supported in noop context"))
+        }
+
+        async fn plugin_list(&self) -> Result<String> {
+            Ok("[]".to_string())
+        }
     }
 
     #[derive(Clone)]

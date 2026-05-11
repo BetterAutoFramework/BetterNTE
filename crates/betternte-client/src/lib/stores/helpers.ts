@@ -367,7 +367,6 @@ export function mapEngineConfig(raw: Record<string, unknown>): EngineConfig {
       font_size: Number(overlay.font_size ?? 14),
     },
     scripts: {
-      data_root: String(scripts.data_root ?? "data"),
       auto_update: Boolean(scripts.auto_update ?? false),
       subscriptions: Array.isArray(scripts.subscriptions)
         ? (scripts.subscriptions as Array<Record<string, unknown>>).map((s) => ({
@@ -489,10 +488,18 @@ export function mapEngineConfig(raw: Record<string, unknown>): EngineConfig {
     security: {
       mode: String(security.mode ?? "normal") === "strict" ? "strict" : "normal",
     },
-    active_plugin: String(raw.active_plugin ?? "nte"),
-    plugin_search_paths: Array.isArray(raw.plugin_search_paths)
-      ? (raw.plugin_search_paths as unknown[]).map((p) => String(p))
-      : ["plugins"],
+    plugins: Object.fromEntries(
+      Object.entries((raw.plugins as Record<string, unknown>) ?? {}).map(([id, state]) => {
+        const s = (state as Record<string, unknown>) ?? {};
+        return [
+          id,
+          {
+            enabled: Boolean(s.enabled ?? false),
+            config: (s.config as Record<string, unknown>) ?? {},
+          },
+        ];
+      })
+    ),
   };
 }
 
@@ -561,7 +568,6 @@ export function mapConfigToRust(config: EngineConfig): Record<string, unknown> {
       frame_sample_interval: config.replay.frame_sample_interval,
     },
     security: config.security,
-    active_plugin: config.active_plugin,
-    plugin_search_paths: config.plugin_search_paths,
+    plugins: config.plugins,
   };
 }
