@@ -83,7 +83,7 @@ impl OpenCvTemplateMatcher {
 
     fn match_opencv(
         &self,
-        image: &DynamicImage,
+        image: &opencv::core::Mat,
         template: &DynamicImage,
         params: &TemplateMatchParams,
     ) -> anyhow::Result<Vec<MatchResult>> {
@@ -94,23 +94,27 @@ impl OpenCvTemplateMatcher {
         };
 
         let (img_mat, tpl_mat, tpl_w, tpl_h) = if params.grayscale {
-            let img_gray = Self::to_gray_u8(image);
+            // BGRA → Gray: single cvtColor call
+            let mut gray = Mat::default();
+            imgproc::cvt_color(image, &mut gray, imgproc::COLOR_BGRA2GRAY, 0)?;
             let tpl_gray = Self::to_gray_u8(template);
-            if tpl_gray.width() > img_gray.width() || tpl_gray.height() > img_gray.height() {
+            if tpl_gray.width() > gray.cols() as u32 || tpl_gray.height() > gray.rows() as u32 {
                 return Ok(vec![]);
             }
             let w = tpl_gray.width();
             let h = tpl_gray.height();
-            (Self::gray_to_mat(&img_gray)?, Self::gray_to_mat(&tpl_gray)?, w, h)
+            (gray, Self::gray_to_mat(&tpl_gray)?, w, h)
         } else {
-            let img_bgr = Self::to_bgr_mat(image)?;
+            // BGRA → BGR: single cvtColor call (drops alpha channel)
+            let mut bgr = Mat::default();
+            imgproc::cvt_color(image, &mut bgr, imgproc::COLOR_BGRA2BGR, 0)?;
             let tpl_bgr = Self::to_bgr_mat(template)?;
-            if tpl_bgr.cols() > img_bgr.cols() || tpl_bgr.rows() > img_bgr.rows() {
+            if tpl_bgr.cols() > bgr.cols() || tpl_bgr.rows() > bgr.rows() {
                 return Ok(vec![]);
             }
             let w = tpl_bgr.cols() as u32;
             let h = tpl_bgr.rows() as u32;
-            (img_bgr, tpl_bgr, w, h)
+            (bgr, tpl_bgr, w, h)
         };
 
         let mut corr = Mat::default();
@@ -210,7 +214,7 @@ impl TemplateMatcher for OpenCvTemplateMatcher {
 
     async fn match_template(
         &self,
-        image: &DynamicImage,
+        image: &opencv::core::Mat,
         template: &DynamicImage,
         params: &TemplateMatchParams,
     ) -> anyhow::Result<Vec<MatchResult>> {
@@ -219,7 +223,7 @@ impl TemplateMatcher for OpenCvTemplateMatcher {
 
     async fn match_multi(
         &self,
-        image: &DynamicImage,
+        image: &opencv::core::Mat,
         templates: &HashMap<String, DynamicImage>,
         params: &TemplateMatchParams,
     ) -> anyhow::Result<HashMap<String, Vec<MatchResult>>> {
@@ -274,7 +278,14 @@ mod tests {
     #[tokio::test]
     async fn mask_params_switch_match_path_and_execute() {
         let matcher = OpenCvTemplateMatcher::new();
-        let scene = rgba_row(&[[255, 0, 0, 255], [0, 0, 255, 255], [255, 0, 0, 255]]);
+        // Build a 1×3 BGRA Mat as the scene image
+        let bgra_data: [u8; 12] = [
+            255, 0, 0, 255, // pixel 0: BGRA blue
+            0, 0, 255, 255, // pixel 1: BGRA red
+            255, 0, 0, 255, // pixel 2: BGRA blue
+        ];
+        let flat = Mat::from_slice(&bgra_data).unwrap();
+        let scene = flat.reshape(4, 1).unwrap().try_clone().unwrap(); // 1 row, 4ch → 1×3 BGRA
         let template = rgba_row(&[[255, 0, 0, 255], [0, 255, 0, 255]]);
 
         let plain = TemplateMatchParams::default();

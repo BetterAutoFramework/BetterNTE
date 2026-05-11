@@ -5,9 +5,8 @@ use std::sync::OnceLock;
 use tauri::AppHandle;
 
 use betternte_core::config::NotificationConfig;
-use betternte_engine::notify_builder;
-use serde::{Deserialize, Serialize};
-
+use betternte_core::EngineConfig;
+use betternte_engine::create_notification_manager;
 use crate::{persist_engine_config_file, save_config, AppState};
 
 static WINDOW_QUERY_GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
@@ -261,7 +260,7 @@ fn notification_config_for_channel_test(
     base
 }
 
-/// Map UI channel id to the notifier name registered in [`notify_builder::build_notification_manager`].
+/// Map UI channel id to the notifier name registered in [`create_notification_manager`].
 fn resolve_registered_notifier_name(ui_channel: &str) -> &str {
     match ui_channel {
         "discord" => "webhook",
@@ -278,7 +277,7 @@ pub async fn test_notification_channel(
     let base: NotificationConfig = serde_json::from_value(notifications)
         .map_err(|e| format!("Invalid notification config: {}", e))?;
     let cfg = notification_config_for_channel_test(base, &ui_channel);
-    let mgr = notify_builder::build_notification_manager(&cfg);
+    let mgr = create_notification_manager(&cfg);
     let name = resolve_registered_notifier_name(&ui_channel);
     mgr.test_channel(name).await.map_err(|e| e.to_string())?;
     Ok("ok".into())
@@ -292,8 +291,46 @@ pub fn better_nte_debug_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Return the directories that will be scanned for plugins and scripts/triggers.
+/// Useful for the settings UI to show the user where the engine looks for content.
+#[tauri::command]
+pub async fn get_scan_dirs(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let guard = state.read_engine("getting scan dirs").await?;
+    let engine = guard.as_ref().ok_or("Engine not initialized")?;
+
+    let roots = engine.data_root().roots();
+
+    // Plugin dirs: {root}/plugins for each root
+    let plugin_dirs: Vec<String> = roots
+        .iter()
+        .map(|r| r.join("plugins").to_string_lossy().to_string())
+        .collect();
+
+    // Script/trigger dirs: {root}/{sub.directory}/scripts and .../triggers
+    let mut script_dirs: Vec<String> = Vec::new();
+    for sub in &engine.config().scripts.subscriptions {
+        if !sub.enabled {
+            continue;
+        }
+        for suffix in &["scripts", "triggers"] {
+            for root in roots {
+                let dir = root.join(&sub.directory).join(suffix);
+                script_dirs.push(dir.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "plugins": plugin_dirs,
+        "scripts": script_dirs,
+    }))
+}
+
 /// List all plugins (loaded + discovered but not loaded).
 /// Returns a Vec<PluginInfo> as JSON.
+/// If the plugin registry is empty (engine not yet started), triggers a discovery scan first.
 #[tauri::command]
 pub async fn list_plugins(
     state: tauri::State<'_, AppState>,
@@ -306,8 +343,31 @@ pub async fn list_plugins(
         .ok_or("ScriptContext not initialized")?;
 
     let registry = ctx.plugin_registry_handle();
+
+    // If the registry is empty (engine not started yet), trigger a discovery scan
+    {
+        let registry_guard = registry.read().await;
+        let is_empty = registry_guard.is_empty();
+        drop(registry_guard);
+        if is_empty {
+            let data_roots = engine.data_root().roots().to_vec();
+            let plugin_states = engine.config().plugins.clone();
+            tracing::info!(
+                roots = data_roots.len(),
+                "Plugin registry empty, running discovery scan"
+            );
+            let mut registry_guard = registry.write().await;
+            if registry_guard.is_empty() {
+                if let Err(e) = registry_guard.load_from_dirs(&data_roots, &plugin_states) {
+                    tracing::warn!(error = %e, "Plugin discovery scan failed");
+                }
+            }
+        }
+    }
+
     let registry_guard = registry.read().await;
     let list = registry_guard.list_all();
+    tracing::info!(count = list.len(), "list_plugins returning");
 
     serde_json::to_value(&list).map_err(|e| format!("Serialize error: {}", e))
 }
@@ -320,7 +380,7 @@ pub async fn list_plugins(
 pub async fn set_plugin_enabled(
     plugin_id: String,
     enabled: bool,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     // 1. Update config
@@ -371,10 +431,6 @@ pub async fn set_plugin_enabled(
 
 /// Helper: load current config from file.
 fn load_current_config(path: &std::path::Path) -> Result<EngineConfig, String> {
-    use betternte_core::EngineConfig;
     let content = std::fs::read_to_string(path).map_err(|e| format!("Read config failed: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Parse config failed: {}", e))
 }
-
-use crate::{save_config, AppState};
-use betternte_core::EngineConfig;

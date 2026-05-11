@@ -1,13 +1,11 @@
-//! Three-directory merge system for the data directory.
+//! Two-directory merge system for the data directory.
 //!
 //! Priority (high to low):
-//!   1. `<exe_dir>/data/` — executable location (or workspace root in dev mode)
-//!   2. `~/.betternte/data/` — user home directory
-//!   3. `$BETTERNTE_DATA_DIR/data/` — environment variable
+//!   1. `<base_dir>/data/` — workspace root in dev mode; `AppData\Local` when installed
+//!   2. `<install_dir>/data/` — read-only fallback (install directory, e.g. `C:\Program Files\BetterNTE`)
 //!
 //! Higher-priority roots override lower-priority ones when scanning for scripts,
-//! task groups, and flows. User-created content is written to `user_root()` (~/.betternte/data/)
-//! so it persists across app updates.
+//! task groups, and flows. User-created content is written to the primary root.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -20,21 +18,17 @@ pub struct DataRoot {
 }
 
 impl DataRoot {
-    /// Create a new DataRoot, resolving all three directories.
+    /// Create a new DataRoot with the given base directory as the primary root.
     ///
-    /// `exe_dir` is the directory containing the executable (or workspace root in dev mode).
-    pub fn new(exe_dir: &Path) -> Self {
+    /// `base_dir` is the workspace root in dev mode, or `app_local_data_dir` when installed.
+    /// Additional roots (e.g. install directory) can be added via [`add_root`].
+    pub fn new(base_dir: &Path) -> Self {
         let mut roots = Vec::new();
 
-        // Priority 3 (highest): exe_dir/data
-        roots.push(exe_dir.join("data"));
+        // Primary (highest priority): base_dir/data
+        roots.push(base_dir.join("data"));
 
-        // Priority 2 (medium): ~/.betternte/data
-        if let Some(home) = dirs::home_dir() {
-            roots.push(home.join(".betternte").join("data"));
-        }
-
-        // Priority 1 (lowest): $BETTERNTE_DATA_DIR/data
+        // Optional lowest-priority root from environment variable
         if let Ok(env_dir) = std::env::var("BETTERNTE_DATA_DIR") {
             roots.push(PathBuf::from(env_dir).join("data"));
         }
@@ -48,20 +42,26 @@ impl DataRoot {
         &self.roots
     }
 
+    /// Add an additional data root at the lowest priority.
+    /// Used to include the install directory (e.g. `C:\Program Files\BetterNTE\data`)
+    /// which is separate from the runtime base dir (`AppData\Local\BetterNTE`).
+    pub fn add_root(&mut self, root: PathBuf) {
+        if !self.roots.contains(&root) {
+            self.roots.push(root);
+        }
+    }
+
     /// Get the highest-priority root (for write operations).
     /// New files should always be written to the highest-priority root.
     pub fn primary(&self) -> &PathBuf {
         &self.roots[0]
     }
 
-    /// Get the user home data root (`~/.betternte/data/`).
+    /// Get the user-writable data root (same as `primary()`).
     ///
-    /// Used for user-created content that should persist across app updates.
-    /// Falls back to `primary()` if only one root exists (no home dir resolved).
+    /// User-created content is always written to the primary root.
     pub fn user_root(&self) -> &PathBuf {
-        // user_root is always the second root (priority 2)
-        // If only one root exists (no home dir), fall back to primary
-        self.roots.get(1).unwrap_or(&self.roots[0])
+        self.primary()
     }
 
     /// Resolve a relative path against the merged data root.
@@ -104,7 +104,7 @@ impl DataRoot {
         result
     }
 
-    /// Ensure the primary data root and user_root subdirectories exist.
+    /// Ensure the primary data root subdirectories exist.
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         let primary = self.primary();
         for subdir in &[
@@ -118,21 +118,6 @@ impl DataRoot {
         ] {
             std::fs::create_dir_all(primary.join(subdir))?;
         }
-
-        // Also ensure user_root has local/ directories for user-created content
-        let user = self.user_root();
-        if user != primary {
-            for subdir in &[
-                "local",
-                "local/scripts",
-                "local/triggers",
-                "local/task-groups",
-                "local/flows",
-            ] {
-                std::fs::create_dir_all(user.join(subdir))?;
-            }
-        }
-
         Ok(())
     }
 }

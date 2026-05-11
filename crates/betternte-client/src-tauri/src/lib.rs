@@ -545,66 +545,152 @@ pub(crate) fn seed_bundled_user_data(app: &AppHandle, user_base: &Path) -> Resul
         tracing::info!(from = %src.display(), to = %dst.display(), "Seeded {} from bundle", name);
     }
 
-    // Refresh bundled official scripts only when app version changes.
-    // Keep `data/local` and other user-generated content untouched.
-    let bundled_main = res_dir.join("data").join("main");
-    if bundled_main.is_dir() {
-        let user_main = user_base.join("data").join("main");
-        let data_dir = user_base.join("data");
-        let version_marker = data_dir.join(".main_bundle_version");
-        let current_version = app.package_info().version.to_string();
-        let previous_version = fs::read_to_string(&version_marker)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .unwrap_or_default();
+    // Per-directory hash-based sync: only update scripts/triggers/plugins whose content changed.
+    let current_version = app.package_info().version.to_string();
+    let data_dir = user_base.join("data");
 
-        if previous_version != current_version {
-            if user_main.exists() {
-                fs::remove_dir_all(&user_main).map_err(|e| {
-                    format!(
-                        "Failed to clear user main scripts {} before sync: {}",
-                        user_main.display(),
-                        e
-                    )
+    for subdir in &["main", "plugins"] {
+        let bundled = res_dir.join("data").join(subdir);
+        if !bundled.is_dir() {
+            continue;
+        }
+        let user_dir = data_dir.join(subdir);
+        let marker = data_dir.join(format!(".{}_bundle_hashes", subdir));
+
+        // Load previous hashes { dir_name -> hash_string }
+        let prev_hashes: std::collections::HashMap<String, String> =
+            fs::read_to_string(&marker)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+
+        // Walk bundled top-level directories and compute hashes
+        let mut new_hashes: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let entries = match fs::read_dir(&bundled) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if !entry_path.is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name().to_string_lossy().to_string();
+            let hash = hash_directory(&entry_path);
+            new_hashes.insert(dir_name.clone(), hash.clone());
+
+            let prev_hash = prev_hashes.get(&dir_name);
+            if prev_hash == Some(&hash) {
+                tracing::debug!(subdir, dir = %dir_name, "Directory unchanged, skip");
+                continue;
+            }
+
+            // Content changed or new directory — replace this specific directory
+            let dst = user_dir.join(&dir_name);
+            if dst.exists() {
+                fs::remove_dir_all(&dst).map_err(|e| {
+                    format!("Failed to clear {}/{}: {}", subdir, dir_name, e)
                 })?;
             }
-            copy_dir_recursive(&bundled_main, &user_main).map_err(|e| {
+            copy_dir_recursive(&entry_path, &dst).map_err(|e| {
                 format!(
-                    "Failed to sync bundled main scripts from {} to {}: {}",
-                    bundled_main.display(),
-                    user_main.display(),
-                    e
-                )
-            })?;
-            fs::create_dir_all(&data_dir).map_err(|e| {
-                format!(
-                    "Failed to create data dir {} for version marker: {}",
-                    data_dir.display(),
-                    e
-                )
-            })?;
-            fs::write(&version_marker, &current_version).map_err(|e| {
-                format!(
-                    "Failed to write main bundle version marker {}: {}",
-                    version_marker.display(),
-                    e
+                    "Failed to sync {}/{}: {}",
+                    subdir, dir_name, e
                 )
             })?;
             tracing::info!(
-                from = %bundled_main.display(),
-                to = %user_main.display(),
-                version = %current_version,
-                "Synced bundled official scripts (main) due to version change"
-            );
-        } else {
-            tracing::debug!(
-                version = %current_version,
-                "Skip syncing bundled official scripts (main); version unchanged"
+                subdir,
+                dir = %dir_name,
+                prev = prev_hash.map(|s| s.as_str()).unwrap_or("none"),
+                new = %hash,
+                "Synced directory"
             );
         }
+
+        // Remove user directories that no longer exist in the bundle
+        if user_dir.exists() {
+            for entry in fs::read_dir(&user_dir).into_iter().flatten().flatten() {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                if !new_hashes.contains_key(&dir_name) && !dir_name.starts_with('.') {
+                    let dst = user_dir.join(&dir_name);
+                    if dst.is_dir() {
+                        let _ = fs::remove_dir_all(&dst);
+                        tracing::info!(subdir, dir = %dir_name, "Removed stale bundled directory");
+                    }
+                }
+            }
+        }
+
+        // Write updated hashes
+        fs::create_dir_all(&data_dir).ok();
+        if let Ok(json) = serde_json::to_string_pretty(&new_hashes) {
+            let _ = fs::write(&marker, json);
+        }
+        // Also write version marker for compatibility
+        let version_marker = data_dir.join(format!(".{}_bundle_version", subdir));
+        let _ = fs::write(&version_marker, &current_version);
     }
 
     Ok(())
+}
+
+/// Compute a SHA-256-like hash of all files in a directory (recursively).
+/// Uses file content + relative path for deterministic comparison.
+fn hash_directory(dir: &Path) -> String {
+    use std::collections::BTreeMap;
+
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    collect_files(dir, dir, &mut files);
+
+    // Simple hash: concat "path:content_len:content_hash" for each file
+    let mut hasher_input = Vec::new();
+    for (path, content) in &files {
+        hasher_input.extend_from_slice(path.as_bytes());
+        hasher_input.push(0);
+        hasher_input.extend_from_slice(&content.len().to_le_bytes());
+        // Use first 64 bytes + last 64 bytes as a quick fingerprint
+        let fingerprint = if content.len() <= 128 {
+            content.clone()
+        } else {
+            let mut fp = Vec::with_capacity(128);
+            fp.extend_from_slice(&content[..64]);
+            fp.extend_from_slice(&content[content.len() - 64..]);
+            fp
+        };
+        hasher_input.extend_from_slice(&fingerprint);
+    }
+
+    // Simple hash using std::hash
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher_input.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Recursively collect all files in a directory as (relative_path, content) pairs.
+fn collect_files(base: &Path, dir: &Path, out: &mut std::collections::BTreeMap<String, Vec<u8>>) {
+    use std::io::Read;
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(base)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if path.is_dir() {
+            collect_files(base, &path, out);
+        } else if let Ok(mut f) = fs::File::open(&path) {
+            let mut buf = Vec::new();
+            let _ = f.read_to_end(&mut buf);
+            out.insert(rel, buf);
+        }
+    }
 }
 
 fn load_config(path: &PathBuf) -> EngineConfig {
@@ -884,6 +970,9 @@ pub fn run() {
             commands::settings::test_notification_channel,
             commands::settings::export_logs,
             commands::settings::better_nte_debug_enabled,
+            commands::settings::get_scan_dirs,
+            commands::settings::list_plugins,
+            commands::settings::set_plugin_enabled,
         ])
         .setup(|app| {
             use tauri::menu::{MenuBuilder, MenuItemBuilder};

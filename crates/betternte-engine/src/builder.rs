@@ -29,6 +29,7 @@ fn build_template_matcher(
 pub struct EngineBuilder {
     config: EngineConfig,
     base_dir: std::path::PathBuf,
+    install_dir: Option<std::path::PathBuf>,
     condition_handlers: Vec<Box<dyn ConditionHandler>>,
     input_runner: Option<Arc<dyn InputRunner>>,
     extra_step_handlers: Vec<Box<dyn StepHandler>>,
@@ -40,10 +41,20 @@ impl EngineBuilder {
         Self {
             config,
             base_dir,
+            install_dir: None,
             condition_handlers: Vec::new(),
             input_runner: None,
             extra_step_handlers: Vec::new(),
         }
+    }
+
+    /// Set the install directory (where the app binary lives).
+    /// When set, `{install_dir}/data/` is added as an additional data root at the lowest
+    /// priority, so bundled data in the install directory is discoverable even when
+    /// `base_dir` resolves elsewhere (e.g. `AppData\Local`).
+    pub fn with_install_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.install_dir = Some(dir);
+        self
     }
 
     /// Add custom condition handlers (Strategy pattern).
@@ -69,6 +80,7 @@ impl EngineBuilder {
         let EngineBuilder {
             config,
             base_dir,
+            install_dir,
             condition_handlers,
             input_runner,
             extra_step_handlers,
@@ -84,7 +96,16 @@ impl EngineBuilder {
         info!(base_dir = %base_dir.display(), "Engine created (idle)");
 
         // Resolve data root with three-directory merge
-        let data_root = betternte_core::DataRoot::new(&base_dir);
+        let mut data_root = betternte_core::DataRoot::new(&base_dir);
+        if let Some(ref install_dir) = install_dir {
+            let install_data = install_dir.join("data");
+            // Only add if it's a real install dir (not inside base_dir, e.g. target/debug/)
+            if install_data != data_root.primary().as_path()
+                && !install_dir.starts_with(&base_dir)
+            {
+                data_root.add_root(install_data);
+            }
+        }
 
         // Initialize ScriptRuntime with primary data root as scripts_dir
         let primary_data_root = data_root.primary().clone();

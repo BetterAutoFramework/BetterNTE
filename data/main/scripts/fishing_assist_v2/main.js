@@ -843,14 +843,12 @@ async function sellFish() {
       }
       
       if (guildFishCave) {
-        const sellCount = taskParams().sell_count || 1;
-        for (let i = 0; i < sellCount; i++) {
-          await ctx.anti_detect.click({x: 1540, y: 967});
-          await ctx.anti_detect.sleep({ms: 2000});
-          await ctx.anti_detect.click({x: 964, y: 1070});
-          await ctx.anti_detect.sleep({ms: 2000});
-        }
-
+        await ctx.anti_detect.click({x: 1054, y: 961});
+        await ctx.anti_detect.sleep({ms: 2000});
+        await ctx.anti_detect.click({x: 1163, y: 703});
+        await ctx.anti_detect.sleep({ms: 2000});
+        await ctx.anti_detect.click({x: 892, y: 961});
+        await ctx.anti_detect.sleep({ms: 2000});
         await ctx.anti_detect.keyPress({key: 'esc'});
         await ctx.anti_detect.sleep({ms: 2000});
         return true;
@@ -1054,7 +1052,12 @@ async function start1() {
 
     const c1 = await ctx.countColor('#FFFFFF', { roi: { x: 1708, y: 892, width: 257, height: 327 }});
     const c2 = await ctx.countColor('#207CFF', { roi: { x: 1708, y: 892, width: 257, height: 327 }});
+    const c5 = await ctx.countColor('#2CCCAF', { roi: { x: 565, y: 11, width: 888, height: 232 }});
+
     if (c1 >= 300 && c2 >= 300) {
+      hookedStreak += 1;
+      break
+    } else if (c5 >= 100) {
       hookedStreak += 1;
       break
     } else {
@@ -1124,8 +1127,23 @@ async function start1() {
 
 
 async function start() {
+  const tuning = taskParams();
+  const sellEveryN = Math.max(0, Number(tuning.sell_every_n_catches || tuning.sellEveryNCatches || 0));
+  let catchCount = 0;
+
   while (true) {
+    ctx.logInfo(`累计钓鱼: ${catchCount} 次`);
+    if (sellEveryN > 0 && catchCount >= sellEveryN) {
+      ctx.logInfo(`已钓鱼 ${catchCount} 次，开始出售鱼获`);
+      await ctx.anti_detect.sleep({ms: 2000});
+      await ctx.anti_detect.click({x: 1523, y: 988})
+      await ctx.anti_detect.sleep({ms: 1000})
+      await sellFish();
+      catchCount = 0;
+      await ctx.anti_detect.sleep({ms: 2000});
+    }
     await start1()
+    catchCount += 1;
     await ctx.anti_detect.sleep({ms: 1000})
   }
 }

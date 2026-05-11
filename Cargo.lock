@@ -84,6 +84,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7eb93bbb63b9c227414f6eb3a0adfddca591a8ce1e9b60661bb08969b87e340b"
+dependencies = [
+ "object 0.37.3",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -368,7 +377,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "betternte-capture"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -388,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-client"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -416,13 +425,14 @@ dependencies = [
 
 [[package]]
 name = "betternte-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
  "dirs",
  "image",
+ "opencv",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -434,7 +444,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-engine"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -450,6 +460,7 @@ dependencies = [
  "chrono",
  "image",
  "notify",
+ "opencv",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -461,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-helper"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -479,7 +490,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-input"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -497,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-notify"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "betternte-core",
@@ -509,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-overlay"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "betternte-core",
  "serde",
@@ -522,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -540,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-script"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -562,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "betternte-vision"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3170,6 +3181,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mach2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "markup5ever"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3255,6 +3275,15 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "memfd"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad38eb12aea514a0466ea40a80fd8cc83637065948eb4a426e4aa46261175227"
+dependencies = [
+ "rustix 1.1.4",
+]
 
 [[package]]
 name = "memmap2"
@@ -3721,6 +3750,15 @@ dependencies = [
  "crc32fast",
  "hashbrown 0.15.5",
  "indexmap 2.14.0",
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.37.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
+dependencies = [
  "memchr",
 ]
 
@@ -4402,6 +4440,16 @@ checksum = "52717f9a02b6965224f95ca2a81e2e0c5c43baacd28ca057577988930b6c3d5b"
 dependencies = [
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "psm"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "645dbe486e346d9b5de3ef16ede18c26e6c70ad97418f4874b8b1889d6e761ea"
+dependencies = [
+ "ar_archive_writer",
+ "cc",
 ]
 
 [[package]]
@@ -7184,28 +7232,37 @@ dependencies = [
  "anyhow",
  "bitflags 2.11.1",
  "bumpalo",
+ "cc",
  "cfg-if",
  "hashbrown 0.14.5",
  "indexmap 2.14.0",
  "libc",
  "log",
- "object",
+ "mach2",
+ "memfd",
+ "object 0.36.7",
  "once_cell",
  "paste",
  "postcard",
+ "psm",
  "pulley-interpreter",
+ "rustix 0.38.44",
  "serde",
  "serde_derive",
+ "smallvec",
  "sptr",
  "target-lexicon 0.13.5",
  "wasmparser 0.221.3",
+ "wasmtime-asm-macros",
  "wasmtime-component-macro",
  "wasmtime-cranelift",
  "wasmtime-environ",
  "wasmtime-fiber",
  "wasmtime-jit-icache-coherence",
  "wasmtime-math",
+ "wasmtime-slab",
  "wasmtime-versioned-export-macros",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7254,7 +7311,7 @@ dependencies = [
  "gimli",
  "itertools 0.12.1",
  "log",
- "object",
+ "object 0.36.7",
  "smallvec",
  "target-lexicon 0.13.5",
  "thiserror 1.0.69",
@@ -7275,7 +7332,7 @@ dependencies = [
  "gimli",
  "indexmap 2.14.0",
  "log",
- "object",
+ "object 0.36.7",
  "postcard",
  "serde",
  "serde_derive",
@@ -7321,6 +7378,12 @@ checksum = "29210ec2aa25e00f4d54605cedaf080f39ec01a872c5bd520ad04c67af1dde17"
 dependencies = [
  "libm",
 ]
+
+[[package]]
+name = "wasmtime-slab"
+version = "29.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcb5821a96fa04ac14bc7b158bb3d5cd7729a053db5a74dad396cd513a5e5ccf"
 
 [[package]]
 name = "wasmtime-versioned-export-macros"

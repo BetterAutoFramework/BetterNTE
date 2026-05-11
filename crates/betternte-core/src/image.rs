@@ -1,5 +1,7 @@
 //! 图像和帧数据类型
 
+use std::sync::Arc;
+
 use image::{DynamicImage, ImageBuffer, RgbImage, RgbaImage};
 
 use chrono::{DateTime, Utc};
@@ -34,14 +36,14 @@ impl PixelFormat {
 /// 截图帧数据。
 ///
 /// 一帧完整的截图数据，包含像素数据、尺寸、格式和时间戳。
-#[derive(Debug, Clone)]
+/// 像素数据用 `Arc<Vec<u8>>` 共享，`Clone` 为 O(1) 引用计数。
 pub struct CaptureFrame {
     /// 宽度（像素）
     pub width: u32,
     /// 高度（像素）
     pub height: u32,
     /// 像素数据（格式由 `format` 字段指定）
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
     /// 像素格式
     pub format: PixelFormat,
     /// 帧捕获时间戳
@@ -50,6 +52,34 @@ pub struct CaptureFrame {
     pub sequence: u64,
     /// 来源引擎名称
     pub source: String,
+}
+
+impl Clone for CaptureFrame {
+    fn clone(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            data: Arc::clone(&self.data),
+            format: self.format,
+            timestamp: self.timestamp,
+            sequence: self.sequence,
+            source: self.source.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for CaptureFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaptureFrame")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("data_len", &self.data.len())
+            .field("format", &self.format)
+            .field("timestamp", &self.timestamp)
+            .field("sequence", &self.sequence)
+            .field("source", &self.source)
+            .finish()
+    }
 }
 
 impl CaptureFrame {
@@ -64,7 +94,7 @@ impl CaptureFrame {
         Self {
             width,
             height,
-            data,
+            data: Arc::new(data),
             format,
             timestamp: Utc::now(),
             sequence: 0,
@@ -111,7 +141,7 @@ impl CaptureFrame {
         Some(Self {
             width: region.width,
             height: region.height,
-            data: cropped,
+            data: Arc::new(cropped),
             format: self.format,
             timestamp: self.timestamp,
             sequence: self.sequence,
@@ -135,7 +165,7 @@ impl CaptureFrame {
             }
             PixelFormat::Rgba => {
                 let img: RgbaImage =
-                    ImageBuffer::from_raw(self.width, self.height, self.data.clone()).ok_or_else(
+                    ImageBuffer::from_raw(self.width, self.height, (*self.data).clone()).ok_or_else(
                         || {
                             format!(
                                 "Buffer size mismatch for RGBa image ({}x{})",
@@ -159,7 +189,7 @@ impl CaptureFrame {
             }
             PixelFormat::Rgb => {
                 let img: RgbImage =
-                    ImageBuffer::from_raw(self.width, self.height, self.data.clone()).ok_or_else(
+                    ImageBuffer::from_raw(self.width, self.height, (*self.data).clone()).ok_or_else(
                         || {
                             format!(
                                 "Buffer size mismatch for RGB image ({}x{})",
@@ -170,7 +200,7 @@ impl CaptureFrame {
                 Ok(DynamicImage::ImageRgb8(img))
             }
             PixelFormat::Gray => {
-                let img = ImageBuffer::from_raw(self.width, self.height, self.data.clone())
+                let img = ImageBuffer::from_raw(self.width, self.height, (*self.data).clone())
                     .ok_or_else(|| {
                         format!(
                             "Buffer size mismatch for gray image ({}x{})",
@@ -191,7 +221,7 @@ impl CaptureFrame {
         Ok(Self {
             width,
             height,
-            data,
+            data: Arc::new(data),
             format: PixelFormat::Rgba,
             timestamp: self.timestamp,
             sequence: self.sequence,
@@ -216,7 +246,7 @@ impl CaptureFrame {
 
     /// BGRA -> RGBA 转换
     fn bgra_to_rgba(&self) -> Vec<u8> {
-        let mut data = self.data.clone();
+        let mut data = (*self.data).clone();
         for chunk in data.chunks_exact_mut(4) {
             chunk.swap(0, 2); // B <-> R
         }
@@ -225,7 +255,7 @@ impl CaptureFrame {
 
     /// BGR -> RGB 转换
     fn bgr_to_rgb(&self) -> Vec<u8> {
-        let mut data = self.data.clone();
+        let mut data = (*self.data).clone();
         for chunk in data.chunks_exact_mut(3) {
             chunk.swap(0, 2); // B <-> R
         }

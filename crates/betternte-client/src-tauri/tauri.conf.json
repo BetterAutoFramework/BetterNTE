@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicholasq/tauri-config-schema/main/tauri.schema.json",
   "productName": "BetterNTE",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "identifier": "com.betternte.app",
   "build": {
     "frontendDist": "../dist",

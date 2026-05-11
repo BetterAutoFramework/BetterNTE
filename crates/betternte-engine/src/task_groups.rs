@@ -387,7 +387,7 @@ impl Engine {
     /// Load task groups from all enabled subscriptions across all data roots.
     ///
     /// Returns `true` if orphan task-group hotkeys were removed from config.
-    pub(super) fn load_task_groups(&mut self) -> bool {
+    pub fn load_task_groups(&mut self) -> bool {
         self.task_groups = Vec::new();
         let parser = FlowParser::new();
         let subscriptions = self.config.scripts.subscriptions.clone();
@@ -455,7 +455,7 @@ impl Engine {
     }
 
     /// Load flow definitions from all enabled subscriptions across all data roots.
-    pub(super) fn load_flows(&mut self) {
+    pub fn load_flows(&mut self) {
         self.flows_store = Vec::new();
         let parser = FlowParser::new();
         let subscriptions = self.config.scripts.subscriptions.clone();

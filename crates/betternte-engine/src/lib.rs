@@ -41,6 +41,7 @@ use tracing::{debug, info};
 use betternte_core::EngineConfig;
 use betternte_runtime::{FlowExecutor, Group};
 
+pub use betternte_notify::create_notification_manager;
 pub use betternte_runtime::Flow;
 pub use builder::EngineBuilder;
 pub use event::EventBus;
@@ -521,10 +522,9 @@ impl Engine {
 
     /// Get the local source directory (for writing user-created content).
     ///
-    /// Writes target the user home root (`~/.betternte/data/local/`) so that
-    /// user-created content persists across app updates.
+    /// Writes target the primary data root (`<base_dir>/data/local/`).
     pub(crate) fn local_dir(&self, sub_dir: &str) -> std::path::PathBuf {
-        self.data_root.user_root().join("local").join(sub_dir)
+        self.data_root.primary().join("local").join(sub_dir)
     }
 
     /// Get all enabled subscription scripts/ and triggers/ directories across all data roots.
@@ -536,10 +536,15 @@ impl Engine {
             }
             for suffix in &["scripts", "triggers"] {
                 let sub_path = format!("{}/{}", sub.directory, suffix);
-                let entries = self.data_root.collect_entries(&sub_path);
-                for (_relative, absolute) in entries {
-                    if absolute.is_dir() {
-                        dirs.push(absolute);
+                let mut seen = std::collections::HashSet::new();
+                for root in self.data_root.roots().iter().rev() {
+                    let dir = root.join(&sub_path);
+                    if !dir.is_dir() {
+                        continue;
+                    }
+                    let canonical = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+                    if seen.insert(canonical) {
+                        dirs.push(dir);
                     }
                 }
             }

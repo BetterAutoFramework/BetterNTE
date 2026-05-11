@@ -2,8 +2,6 @@
 
 use tauri::{AppHandle, Manager};
 
-use betternte_engine::Engine;
-
 use crate::{
     load_config, persist_engine_config_file, resolve_engine_base_dir, save_config,
     seed_bundled_user_data, spawn_event_bridge, AppState, EventBusLayer, EVENT_BRIDGE_HANDLE,
@@ -44,8 +42,16 @@ pub async fn init_engine(
     let base_dir = resolve_engine_base_dir(&app)?;
     seed_bundled_user_data(&app, &base_dir)?;
 
-    let engine =
-        Engine::new(config, base_dir).map_err(|e| format!("Engine creation failed: {}", e))?;
+    // Resolve the install directory (where the exe lives) so bundled data/plugins are discoverable
+    let install_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+
+    let mut builder = betternte_engine::EngineBuilder::new(config, base_dir);
+    if let Some(dir) = install_dir {
+        builder = builder.with_install_dir(dir);
+    }
+    let engine = builder.build().map_err(|e| format!("Engine creation failed: {}", e))?;
 
     let event_bus = engine.event_bus().clone();
 

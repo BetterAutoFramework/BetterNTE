@@ -119,7 +119,7 @@ impl DebugScriptContext {
 
 /// Convert a CaptureFrame to a 256px-wide base64 PNG thumbnail.
 fn frame_to_thumbnail_base64(frame: &CaptureFrame) -> Option<String> {
-    let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.data.clone())?;
+    let img = image::RgbaImage::from_raw(frame.width, frame.height, (*frame.data).clone())?;
     let dyn_img = image::DynamicImage::ImageRgba8(img);
 
     // Scale to 256px wide, maintain aspect ratio

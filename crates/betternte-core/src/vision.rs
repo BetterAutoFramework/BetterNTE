@@ -197,6 +197,9 @@ pub trait OcrEngine: Send + Sync {
 }
 
 /// 模板匹配器 trait。
+///
+/// Scene image is expected as a BGRA `Mat` (e.g. from screen capture).
+/// Templates remain `DynamicImage` (loaded from disk).
 #[async_trait]
 pub trait TemplateMatcher: Send + Sync {
     /// 获取匹配器名称
@@ -205,7 +208,7 @@ pub trait TemplateMatcher: Send + Sync {
     /// 单模板匹配
     async fn match_template(
         &self,
-        image: &DynamicImage,
+        image: &opencv::core::Mat,
         template: &DynamicImage,
         params: &TemplateMatchParams,
     ) -> anyhow::Result<Vec<MatchResult>>;
@@ -213,7 +216,7 @@ pub trait TemplateMatcher: Send + Sync {
     /// 多模板匹配
     async fn match_multi(
         &self,
-        image: &DynamicImage,
+        image: &opencv::core::Mat,
         templates: &HashMap<String, DynamicImage>,
         params: &TemplateMatchParams,
     ) -> anyhow::Result<HashMap<String, Vec<MatchResult>>>;
@@ -268,7 +271,7 @@ impl From<u8> for ColorTolerance {
 pub trait ColorDetector: Send + Sync {
     fn detect_pixel(
         &self,
-        image: &DynamicImage,
+        mat: &opencv::core::Mat,
         pos: Point,
         target: Color,
         tolerance: ColorTolerance,
@@ -276,18 +279,18 @@ pub trait ColorDetector: Send + Sync {
 
     fn find_color(
         &self,
-        image: &DynamicImage,
+        mat: &opencv::core::Mat,
         target: Color,
         tolerance: ColorTolerance,
     ) -> Vec<Point>;
 
     fn detect_color_region(
         &self,
-        image: &DynamicImage,
+        mat: &opencv::core::Mat,
         region: &Region,
         target: Color,
         tolerance: ColorTolerance,
     ) -> f32;
 
-    fn get_pixel_color(&self, image: &DynamicImage, pos: Point) -> Option<Color>;
+    fn get_pixel_color(&self, mat: &opencv::core::Mat, pos: Point) -> Option<Color>;
 }

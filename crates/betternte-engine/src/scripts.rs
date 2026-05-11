@@ -52,43 +52,42 @@ impl Engine {
             }
             let source = &sub.name;
 
-            // Scan scripts/ across all data roots
-            let scripts_sub_path = format!("{}/scripts", sub.directory);
-            let script_entries = self.data_root.collect_entries(&scripts_sub_path);
-            for (relative, absolute) in &script_entries {
-                if absolute.is_dir() {
+            // Scan scripts/ and triggers/ across all data roots
+            for suffix in &["scripts", "triggers"] {
+                let sub_path = format!("{}/{}", sub.directory, suffix);
+                let mut seen_dirs = std::collections::HashSet::new();
+                for root in self.data_root.roots().iter().rev() {
+                    let dir = root.join(&sub_path);
+                    if !dir.is_dir() {
+                        continue;
+                    }
+                    // Canonicalize to deduplicate equivalent paths on Windows
+                    let canonical = std::fs::canonicalize(&dir).unwrap_or(dir.clone());
+                    if !seen_dirs.insert(canonical) {
+                        continue;
+                    }
                     info!(
-                        path = %absolute.display(),
-                        relative = %relative.display(),
-                        "Scanning scripts directory"
+                        path = %dir.display(),
+                        "Scanning {} directory", suffix
                     );
-                    let root = absolute.parent().unwrap_or(self.data_root.primary());
-                    self.scripts_store.extend(super::loader::load_scripts(
-                        absolute,
+                    let store = if *suffix == "scripts" {
+                        &mut self.scripts_store
+                    } else {
+                        &mut self.triggers_store
+                    };
+                    store.extend(super::loader::load_scripts(
+                        &dir,
                         source,
                         root,
                     ));
                 }
             }
+        }
 
-            // Scan triggers/ across all data roots
-            let triggers_sub_path = format!("{}/triggers", sub.directory);
-            let trigger_entries = self.data_root.collect_entries(&triggers_sub_path);
-            for (relative, absolute) in &trigger_entries {
-                if absolute.is_dir() {
-                    info!(
-                        path = %absolute.display(),
-                        relative = %relative.display(),
-                        "Scanning triggers directory"
-                    );
-                    let root = absolute.parent().unwrap_or(self.data_root.primary());
-                    self.triggers_store.extend(super::loader::load_scripts(
-                        absolute,
-                        source,
-                        root,
-                    ));
-                }
-            }
+        // Deduplicate scripts/triggers by ID (higher-priority source wins)
+        for store in [&mut self.scripts_store, &mut self.triggers_store] {
+            let mut seen_ids = std::collections::HashSet::new();
+            store.retain(|e| seen_ids.insert(e.manifest.name.clone()));
         }
 
         // 发布 ScriptLoaded 事件

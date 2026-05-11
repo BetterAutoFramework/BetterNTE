@@ -154,6 +154,7 @@ pub struct JsPlugin {
     manifest: PluginManifest,
     methods: Vec<String>,
     /// Plugin configuration value (from EngineConfig.plugins[id].config).
+    #[allow(dead_code)]
     config: serde_json::Value,
     /// The isolated QuickJS runtime + context, wrapped in a Mutex for thread safety.
     /// Each `call()` locks the mutex, enters the context, invokes the method, and returns.
@@ -161,9 +162,11 @@ pub struct JsPlugin {
 }
 
 struct JsPluginInner {
+    #[allow(dead_code)]
     runtime: rquickjs::Runtime,
     context: rquickjs::Context,
     /// Per-plugin persistent storage (shared with JS host function closures).
+    #[allow(dead_code)]
     storage: Arc<Mutex<PluginStorage>>,
 }
 
@@ -187,26 +190,23 @@ impl JsPlugin {
         let storage = Arc::new(Mutex::new(PluginStorage::new(storage_path)));
 
         // Evaluate the plugin source and extract exported methods
-        let methods = {
-            let guard = ctx.acquire();
-            let js_ctx: rquickjs::Ctx<'_> = guard;
-
+        let methods = ctx.with(|js_ctx| {
             // Set up module.exports and exports globals
             js_ctx.eval::<(), _>(
-                r#"
+                b"
                 var module = { exports: {} };
                 var exports = module.exports;
-                "#,
+                ",
             )?;
 
             // Inject the plugin ctx object with limited API
             Self::inject_plugin_ctx(&js_ctx, &manifest.id, &config, &storage)?;
 
             // Evaluate the plugin source code
-            js_ctx.eval::<(), _>(&source)?;
+            js_ctx.eval::<(), _>(source.as_bytes())?;
 
             // Get the exported object
-            let exports: rquickjs::Object = js_ctx.eval("module.exports")?;
+            let exports: rquickjs::Object = js_ctx.eval(b"module.exports")?;
 
             // Collect method names
             let mut methods = Vec::new();
@@ -217,8 +217,8 @@ impl JsPlugin {
                 }
             }
             methods.sort();
-            methods
-        };
+            Ok::<Vec<String>, anyhow::Error>(methods)
+        })?;
 
         tracing::info!(
             "JS plugin '{}' loaded with methods: {:?}",
@@ -327,7 +327,7 @@ impl JsPlugin {
         );
 
         // Evaluate the ctx setup code
-        js_ctx.eval::<(), _>(&ctx_setup)?;
+        js_ctx.eval::<(), _>(ctx_setup.as_bytes())?;
 
         Ok(())
     }
@@ -360,40 +360,43 @@ impl Plugin for JsPlugin {
             .inner
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let guard = inner.context.acquire();
-        let js_ctx: rquickjs::Ctx<'_> = guard;
 
         // Serialize args to JSON string, then parse in JS
         let args_json = serde_json::to_string(&args)?;
-        let call_code = format!(
-            r#"
-            (function() {{
-                var args = JSON.parse({args_json:?});
-                var fn = module.exports[{method:?}];
-                if (typeof fn !== "function") {{
-                    throw new Error("Method not found: {method}");
-                }}
-                var result = fn.apply(null, args);
-                return JSON.stringify(result !== undefined ? result : null);
-            }})()
-            "#,
-            args_json = args_json,
-            method = method,
-        );
+        let method = method.to_string();
+        let plugin_id = self.manifest.id.clone();
 
-        let result_str: String = js_ctx.eval(&call_code).map_err(|e| {
-            anyhow::anyhow!(
-                "Plugin '{}' method '{}' error: {}",
-                self.manifest.id,
-                method,
-                e
-            )
-        })?;
+        inner.context.with(|js_ctx| {
+            let call_code = format!(
+                r#"
+                (function() {{
+                    var args = JSON.parse({args_json:?});
+                    var fn = module.exports[{method:?}];
+                    if (typeof fn !== "function") {{
+                        throw new Error("Method not found: {method}");
+                    }}
+                    var result = fn.apply(null, args);
+                    return JSON.stringify(result !== undefined ? result : null);
+                }})()
+                "#,
+                args_json = args_json,
+                method = method,
+            );
 
-        // Parse the JSON result string back to Value
-        let value: serde_json::Value =
-            serde_json::from_str(&result_str).unwrap_or(serde_json::Value::Null);
-        Ok(value)
+            let result_str: String = js_ctx.eval(call_code.as_bytes()).map_err(|e| {
+                anyhow::anyhow!(
+                    "Plugin '{}' method '{}' error: {}",
+                    plugin_id,
+                    method,
+                    e
+                )
+            })?;
+
+            // Parse the JSON result string back to Value
+            let value: serde_json::Value =
+                serde_json::from_str(&result_str).unwrap_or(serde_json::Value::Null);
+            Ok::<serde_json::Value, anyhow::Error>(value)
+        })
     }
 
     fn has_hook(&self, event: &str) -> bool {
@@ -612,7 +615,7 @@ type CallFn = unsafe extern "C" fn(
 ) -> *const std::ffi::c_char;
 type FreeFn = unsafe extern "C" fn(*const std::ffi::c_char);
 
-use std::sync::Mutex;
+use betternte_core::config::PluginState;
 
 pub struct FfiPlugin {
     manifest: PluginManifest,
@@ -620,6 +623,7 @@ pub struct FfiPlugin {
     _lib: Arc<Library>,
     methods: Vec<String>,
     /// Cached function pointers (valid as long as `_lib` is alive).
+    #[allow(dead_code)]
     info_fn: InfoFn,
     call_fn: CallFn,
     free_fn: Option<FreeFn>,
@@ -834,6 +838,11 @@ impl PluginRegistry {
         }
     }
 
+    /// Returns true if no plugins have been loaded or discovered yet.
+    pub fn is_empty(&self) -> bool {
+        self.plugins.is_empty() && self.discovered.is_empty()
+    }
+
     /// Scan data root directories for plugins.
     ///
     /// Only loads plugins whose ID is present in `plugin_states` with `enabled: true`.
@@ -849,6 +858,8 @@ impl PluginRegistry {
     ) -> Result<()> {
         self.data_roots = data_roots.to_vec();
         self.discovered.clear();
+
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for root in data_roots {
             let plugins_dir = root.join("plugins");
@@ -894,6 +905,13 @@ impl PluginRegistry {
                 };
 
                 let id = manifest.id.clone();
+
+                // Skip duplicate plugin IDs from lower-priority roots
+                if !seen_ids.insert(id.clone()) {
+                    tracing::debug!(plugin_id = %id, root = %root.display(), "Skipping duplicate plugin from lower-priority root");
+                    continue;
+                }
+
                 let is_enabled = plugin_states.get(&id).map_or(false, |s| s.enabled);
                 let plugin_config = plugin_states
                     .get(&id)

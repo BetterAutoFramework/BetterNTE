@@ -166,6 +166,8 @@ function updateConfig(
       [field]: value,
     },
   };
+}
+
 // ============================================================================
 // File/Directory Picker Button
 // ============================================================================
@@ -962,7 +964,31 @@ function SubscriptionManager({
   );
 }
 
-function PluginSettings({ config, onChange }: { config: EngineConfig; onChange: (section: string, field: string, value: unknown) => void }) {
+function ScanDirHint({ type, show = false }: { type: "plugins" | "scripts"; show?: boolean }) {
+  const [dirs, setDirs] = useState<string[]>([]);
+  useEffect(() => {
+    if (!show) return;
+    invokeAction<{ plugins: string[]; scripts: string[] }>("get_scan_dirs")
+      .then((d) => setDirs(d?.[type] ?? []))
+      .catch(() => {});
+  }, [type, show]);
+  if (!show || dirs.length === 0) return null;
+  return (
+    <div className="text-xs text-foreground-tertiary px-1 pb-2 space-y-1">
+      <div className="flex items-center gap-1.5">
+        <FolderOpen className="w-3.5 h-3.5" />
+        <span className="font-medium">
+          {type === "plugins" ? "插件扫描目录" : "脚本/触发器扫描目录"}
+        </span>
+      </div>
+      {dirs.map((d) => (
+        <div key={d} className="ml-5 font-mono break-all opacity-80">{d}</div>
+      ))}
+    </div>
+  );
+}
+
+function PluginSettings({ config, onChange, showScanDirs = false }: { config: EngineConfig; onChange: (section: keyof EngineConfig, field: string, value: unknown) => void; showScanDirs?: boolean }) {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -1002,14 +1028,16 @@ function PluginSettings({ config, onChange }: { config: EngineConfig; onChange: 
 
   if (plugins.length === 0) {
     return (
-      <CardExpander icon={<Puzzle className="w-4 h-4" />} title="插件管理" description="暂未发现插件。将插件放入 data/plugins/ 目录即可。">
-        <div className="text-sm text-foreground-tertiary py-4 text-center">data/plugins/ 目录下暂无插件</div>
+      <CardExpander icon={<Puzzle className="w-4 h-4" />} title="插件管理" description="暂未发现插件。将插件放入以下目录即可。">
+        <ScanDirHint type="plugins" show={showScanDirs} />
+        <div className="text-sm text-foreground-tertiary py-4 text-center">暂无插件</div>
       </CardExpander>
     );
   }
 
   return (
     <CardExpander icon={<Puzzle className="w-4 h-4" />} title="插件管理" description="管理已发现的插件，启用/禁用和配置参数">
+      <ScanDirHint type="plugins" show={showScanDirs} />
       {plugins.map((plugin) => {
         const state = config.plugins[plugin.id];
         const isEnabled = state?.enabled ?? false;
@@ -1021,7 +1049,7 @@ function PluginSettings({ config, onChange }: { config: EngineConfig; onChange: 
                 <div className="text-sm font-medium text-foreground">
                   {plugin.name}
                   <span className="ml-2 text-xs text-foreground-tertiary">v{plugin.version}</span>
-                  <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-surface/80 text-foreground-secondary">{plugin.plugin_type}</span>
+                  <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-surface/80 text-foreground-secondary">{plugin.type}</span>
                 </div>
                 {plugin.description && <div className="text-xs text-foreground-tertiary mt-1">{plugin.description}</div>}
                 {plugin.methods.length > 0 && <div className="text-xs text-foreground-tertiary mt-1">方法: {plugin.methods.join(", ")}</div>}
@@ -1054,9 +1082,11 @@ function PluginSettings({ config, onChange }: { config: EngineConfig; onChange: 
 function ScriptSettings({
   config,
   onChange,
+  showScanDirs = false,
 }: {
   config: EngineConfig;
   onChange: (section: keyof EngineConfig, field: string, value: unknown) => void;
+  showScanDirs?: boolean;
 }) {
   return (
     <CardExpander
@@ -1065,6 +1095,7 @@ function ScriptSettings({
       description="订阅源设置"
       defaultOpen={true}
     >
+      <ScanDirHint type="scripts" show={showScanDirs} />
       <SettingRow label="自动更新" description="启动时检查订阅源更新">
         <Toggle
           checked={config.scripts.auto_update}
@@ -1554,6 +1585,10 @@ function AdvancedSettings({
 export function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("hotkeys");
   const [debugEnvUnlocked, setDebugEnvUnlocked] = useState(false);
+  const [devMode, setDevMode] = useState(
+    () => localStorage.getItem(DEV_MODE_KEY) === "true"
+  );
+  const showDebugTools = devMode || debugEnvUnlocked;
   /** Bumps after full reset so AdvancedSettings remounts and re-reads developer mode from storage. */
   const [advancedUiResetKey, setAdvancedUiResetKey] = useState(0);
   const config = useEngineStore((s) => s.config);
@@ -1571,6 +1606,13 @@ export function Settings() {
     }).then((v) => {
       setDebugEnvUnlocked(Boolean(v));
     });
+  }, []);
+
+  // Sync devMode from AdvancedSettings toggle
+  useEffect(() => {
+    const handler = (e: Event) => setDevMode((e as CustomEvent<boolean>).detail);
+    window.addEventListener("developer-mode-changed", handler);
+    return () => window.removeEventListener("developer-mode-changed", handler);
   }, []);
 
   // Ensure engine is initialized and config is loaded
@@ -1707,8 +1749,8 @@ export function Settings() {
     ),
     overlay: <OverlaySettings {...sectionProps} />,
     notifications: <NotificationSettings {...sectionProps} />,
-    scripts: <ScriptSettings {...sectionProps} />,
-    plugins: <PluginSettings config={draft} onChange={handleChange} />,
+    scripts: <ScriptSettings {...sectionProps} showScanDirs={showDebugTools} />,
+    plugins: <PluginSettings config={draft} onChange={handleChange} showScanDirs={showDebugTools} />,
     security: <SecuritySettings {...sectionProps} />,
     advanced: (
       <AdvancedSettings

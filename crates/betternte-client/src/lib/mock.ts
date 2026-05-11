@@ -340,6 +340,7 @@ export const mockConfig: EngineConfig = {
   security: {
     mode: "normal",
   },
+  plugins: {},
 };
 
 export const mockStoreScripts: StoreScript[] = [

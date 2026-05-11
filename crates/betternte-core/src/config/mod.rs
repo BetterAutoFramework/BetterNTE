@@ -480,6 +480,7 @@ impl<'de> Deserialize<'de> for ScriptConfig {
             AutoUpdate,
             Subscriptions,
             Repos,
+            DataRoot,
         }
 
         struct ScriptConfigVisitor;
@@ -508,7 +509,8 @@ impl<'de> Deserialize<'de> for ScriptConfig {
                         Field::TriggersDirectory
                         | Field::TaskGroupsDirectory
                         | Field::FlowsDirectory
-                        | Field::AssetsDirectory => {
+                        | Field::AssetsDirectory
+                        | Field::DataRoot => {
                             // Ignore deprecated keys but consume their values.
                             let _: String = map.next_value()?;
                         }

@@ -507,6 +507,7 @@ pub fn register_ctx_api<'js>(
             ocr: wrapAsync("ocr"),
             ocrAll: wrapAsync("ocrAll"),
             getColor: wrapAsync("getColor"),
+            getColors: wrapAsync("getColors"),
             colorMatch: wrapAsync("colorMatch"),
             colorMatchAll: wrapAsync("colorMatchAll"),
             scanSliderStrip: wrapAsync("scanSliderStrip"),
@@ -595,6 +596,7 @@ pub fn register_ctx_api<'js>(
         "ocr",
         "ocrAll",
         "getColor",
+        "getColors",
         "colorMatch",
         "colorMatchAll",
         "scanSliderStrip",
@@ -1080,6 +1082,24 @@ async fn dispatch_ctx_method(
         }
         "ocrAll" => dispatch_serde!(ctx, ocr_all),
         "getColor" => dispatch_str!(ctx, get_color, arg_i32(args, 0), arg_i32(args, 1)),
+        "getColors" => {
+            let points: Vec<(i32, i32)> = args
+                .first()
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| {
+                            let a = v.as_array()?;
+                            let x = a.first()?.as_i64()? as i32;
+                            let y = a.get(1)?.as_i64()? as i32;
+                            Some((x, y))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            ctx.get_colors(&points).await
+                .map(|v| serde_json::to_value(v).unwrap_or(serde_json::Value::Null))
+        }
         "colorMatch" => {
             dispatch_bool!(ctx, color_match, arg_i32(args, 0), arg_i32(args, 1), &arg_str(args, 2), arg_u8(args, 3))
         }
