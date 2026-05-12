@@ -47,12 +47,6 @@ pub struct SharedFrameSnapshot {
 }
 
 #[derive(Clone)]
-struct ScaledFrameCache {
-    source_key: u64,
-    image: DynamicImage,
-}
-
-#[derive(Clone)]
 struct MatFrameCache {
     source_key: u64,
     mat: opencv::core::Mat,
@@ -122,7 +116,6 @@ pub struct EngineScriptContext {
 
     // Capture frame cache
     frame_cache: tokio::sync::Mutex<Option<CoreCaptureFrame>>,
-    scaled_frame_cache: tokio::sync::Mutex<HashMap<(u32, u32), ScaledFrameCache>>,
     mat_frame_cache: tokio::sync::Mutex<HashMap<(u32, u32), MatFrameCache>>,
     ocr_batch_cache: tokio::sync::Mutex<Option<OcrBatchCacheSnapshot>>,
     frame_number: AtomicU64,
@@ -235,7 +228,6 @@ impl EngineScriptContext {
             color_detector: None,
             ocr_engine: None,
             frame_cache: tokio::sync::Mutex::new(None),
-            scaled_frame_cache: tokio::sync::Mutex::new(HashMap::new()),
             mat_frame_cache: tokio::sync::Mutex::new(HashMap::new()),
             ocr_batch_cache: tokio::sync::Mutex::new(None),
             frame_number: AtomicU64::new(0),
@@ -761,70 +753,6 @@ impl EngineScriptContext {
         debug_assert_eq!(mat.typ() & 7, cv_type & 7); // compare depth bits
 
         Ok(mat)
-    }
-
-    async fn get_decoded_frame_for_vision(&self) -> Result<(CoreCaptureFrame, DynamicImage)> {
-        let frame = self.get_cached_core_frame().await?;
-        let key = Self::frame_key(&frame);
-
-        // Determine target resolution: design_resolution if set, otherwise native frame size.
-        let design: Option<(u32, u32)> = *self.design_resolution.lock().unwrap();
-        let (target_w, target_h) = design.unwrap_or((frame.width, frame.height));
-
-        // Check multi-resolution cache.
-        {
-            let cache = self.scaled_frame_cache.lock().await;
-            if let Some(snap) = cache.get(&(target_w, target_h)) {
-                if snap.source_key == key {
-                    if perf_enabled() {
-                        tracing::trace!(
-                            target: "betternte_perf",
-                            event = "frame_reuse_hit",
-                            source = "scaled_frame_cache",
-                            frame_key = key,
-                            target_w = target_w,
-                            target_h = target_h,
-                            "frame_reuse_hit"
-                        );
-                    }
-                    return Ok((frame, snap.image.clone()));
-                }
-            }
-        }
-
-        // Cache miss — decode and optionally scale.
-        let started = Instant::now();
-        let decoded = Self::frame_to_dynamic_image(&frame)?;
-        let needs_scale = target_w != frame.width || target_h != frame.height;
-        let image = if needs_scale {
-            decoded.resize_exact(target_w, target_h, image::imageops::FilterType::Nearest)
-        } else {
-            decoded
-        };
-        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        if perf_enabled() {
-            let mode = perf_mode();
-            if mode == PerfMode::Verbose || elapsed_ms >= perf_slow_threshold_ms() {
-                tracing::info!(
-                    target: "betternte_perf",
-                    event = "decode_frame",
-                    frame_key = key,
-                    target_w = target_w,
-                    target_h = target_h,
-                    scaled = needs_scale,
-                    ms = elapsed_ms,
-                    "decode_frame"
-                );
-            }
-        }
-        self.scaled_frame_cache.lock().await.insert(
-            (target_w, target_h),
-            ScaledFrameCache {
-                source_key: key,
-                image: image.clone(),
-            },
-        );
-        Ok((frame, image))
     }
 
     async fn get_decoded_mat_for_vision(&self) -> Result<(CoreCaptureFrame, opencv::core::Mat)> {
