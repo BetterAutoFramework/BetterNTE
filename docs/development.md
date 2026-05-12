@@ -118,7 +118,7 @@ betternte-helper              betternte-core
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/719733328/BetterNTE.git
+git clone https://github.com/BetterAutoFramework/BetterNTE.git
 cd BetterNTE
 
 # 2. 进入客户端目录、安装依赖、启动开发模式
