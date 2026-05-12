@@ -130,6 +130,9 @@ pub struct EngineScriptContext {
     // FPS tracking
     fps: AtomicU32, // stored as fixed-point: fps * 100
 
+    // Frame pool — read latest frame from capture loop (decoupled architecture)
+    frame_pool: std::sync::Mutex<Option<betternte_capture::FramePool>>,
+
     // Notification — always present; disabled / empty by default, swappable at runtime.
     notification_manager: Arc<tokio::sync::RwLock<betternte_core::NotificationManager>>,
 
@@ -252,6 +255,7 @@ impl EngineScriptContext {
             manifest_perm_stack: std::sync::Mutex::new(Vec::new()),
             manifest_security_strict: AtomicBool::new(true),
             design_resolution: std::sync::Mutex::new(None),
+            frame_pool: std::sync::Mutex::new(None),
             plugin_registry: Arc::new(tokio::sync::RwLock::new(betternte_script::PluginRegistry::new())),
         }
     }
@@ -370,6 +374,11 @@ impl EngineScriptContext {
 
     pub fn set_allow_fallback_capture(&self, allow: bool) {
         self.allow_fallback_capture.store(allow, Ordering::Relaxed);
+    }
+
+    /// Set the frame pool for reading frames from the capture loop (decoupled architecture).
+    pub fn set_frame_pool(&self, pool: betternte_capture::FramePool) {
+        *self.frame_pool.lock().unwrap() = Some(pool);
     }
 
     pub async fn update_shared_frame(&self, frame: CoreCaptureFrame, fps: f64) {
@@ -572,6 +581,7 @@ impl EngineScriptContext {
     }
 
     async fn get_cached_core_frame(&self) -> Result<CoreCaptureFrame> {
+        // 1. Check shared_frame (updated by trigger consumers)
         {
             let shared = self.shared_frame.read().await;
             if let Some(snapshot) = shared.as_ref() {
@@ -587,6 +597,7 @@ impl EngineScriptContext {
                 return Ok(snapshot.frame.clone());
             }
         }
+        // 2. Check frame_cache
         {
             let cache = self.frame_cache.lock().await;
             if let Some(ref frame) = *cache {
@@ -602,6 +613,25 @@ impl EngineScriptContext {
                 return Ok(frame.clone());
             }
         }
+        // 3. Read from frame pool (decoupled capture loop)
+        {
+            let pool_guard = self.frame_pool.lock().unwrap();
+            if let Some(ref pool) = *pool_guard {
+                if let Some(frame) = pool.latest() {
+                    if perf_enabled() {
+                        tracing::trace!(
+                            target: "betternte_perf",
+                            frame_key = frame.sequence,
+                            event = "frame_reuse_hit",
+                            source = "frame_pool",
+                            "frame_reuse_hit"
+                        );
+                    }
+                    return Ok(frame);
+                }
+            }
+        }
+        // 4. Fallback: capture directly
         if self.allow_fallback_capture.load(Ordering::Relaxed) {
             let frame = self.do_capture_core().await?;
             Ok(frame)

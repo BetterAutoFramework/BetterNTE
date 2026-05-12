@@ -220,6 +220,11 @@ impl Engine {
         // Create frame pool — capture pushes, triggers consume independently
         let frame_pool = betternte_capture::FramePool::new();
 
+        // Wire frame pool to script context so solo tasks can read from it
+        if let Some(ref ctx) = self.script_ctx {
+            ctx.set_frame_pool(frame_pool.clone());
+        }
+
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         self.capture_stop = Some(stop_tx);
         let pool_for_capture = frame_pool.clone();
