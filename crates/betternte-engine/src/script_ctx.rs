@@ -1593,11 +1593,11 @@ impl ScriptContext for EngineScriptContext {
     }
 
     async fn ocr(&self, region: &Region, text_color: Option<&str>, text_color_tolerance: u8) -> Result<String> {
-        let (frame, mut dyn_img) = self.get_decoded_frame_for_vision().await?;
+        let (frame, mut mat) = self.get_decoded_mat_for_vision().await?;
 
         if let Some(color_str) = text_color {
             if let Some(target) = parse_color_str(color_str) {
-                dyn_img = apply_text_color_filter(&dyn_img, target, text_color_tolerance);
+                mat = apply_text_color_filter(&mat, target, text_color_tolerance);
             }
         }
         let engine_guard = match self.ocr_engine.as_ref() {
@@ -1608,7 +1608,8 @@ impl ScriptContext for EngineScriptContext {
         };
 
         let frame_key = Self::frame_key(&frame);
-        let (vision_w, vision_h) = dyn_img.dimensions();
+        let vision_w = mat.cols() as u32;
+        let vision_h = mat.rows() as u32;
 
         let current_design_res = *self.design_resolution.lock().unwrap();
         {
@@ -1652,7 +1653,7 @@ impl ScriptContext for EngineScriptContext {
         let eligible = Self::ocr_batch_eligible(region, vision_w, vision_h);
         if eligible {
             let started = Instant::now();
-            match engine.recognize(&dyn_img).await {
+            match engine.recognize(&mat).await {
                 Ok(regions) => {
                     let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
                     if perf_enabled() {
@@ -1720,15 +1721,18 @@ impl ScriptContext for EngineScriptContext {
         }
 
         // Non-batch fallback: crop the scaled frame by region and run OCR on it.
-        let x = region.x.max(0) as u32;
-        let y = region.y.max(0) as u32;
-        let w = region.width.min(vision_w.saturating_sub(x));
-        let h = region.height.min(vision_h.saturating_sub(y));
-        if w == 0 || h == 0 {
+        let x = region.x.max(0);
+        let y = region.y.max(0);
+        let w = (region.width as i32).min((vision_w as i32).saturating_sub(x));
+        let h = (region.height as i32).min((vision_h as i32).saturating_sub(y));
+        if w <= 0 || h <= 0 {
             return Ok(String::new());
         }
-        let cropped = dyn_img.crop_imm(x, y, w, h);
-        match engine.recognize(&cropped).await {
+        let rect = opencv::core::Rect::new(x, y, w, h);
+        let roi = opencv::core::Mat::roi(&mat, rect).map_err(|e| {
+            anyhow::anyhow!("Mat roi for OCR crop: {}", e)
+        })?;
+        match engine.recognize(&roi).await {
             Ok(regions) => {
                 let text = regions
                     .iter()
@@ -1742,7 +1746,7 @@ impl ScriptContext for EngineScriptContext {
     }
 
     async fn ocr_all(&self) -> Result<Vec<OcrResult>> {
-        let (frame, dyn_img) = self.get_decoded_frame_for_vision().await?;
+        let (frame, mat) = self.get_decoded_mat_for_vision().await?;
         let engine_guard = match self.ocr_engine.as_ref() {
             Some(e) => e,
             None => {
@@ -1758,7 +1762,7 @@ impl ScriptContext for EngineScriptContext {
             })?;
         }
 
-        match engine.recognize(&dyn_img).await {
+        match engine.recognize(&mat).await {
             Ok(regions) => {
                 let mapped: Vec<OcrResult> = regions
                     .into_iter()

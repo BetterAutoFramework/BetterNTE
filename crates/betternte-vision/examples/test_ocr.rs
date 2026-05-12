@@ -7,7 +7,16 @@
 //!   cargo run --example test_ocr
 
 use betternte_vision::{OcrConfig, OcrEngine, PaddleOcrEngine};
+use opencv::prelude::*;
 use std::time::Instant;
+
+/// Load an image from disk as a BGRA Mat.
+fn load_image_as_bgra_mat(path: &str) -> Option<opencv::core::Mat> {
+    let img = opencv::imgcodecs::imread(path, opencv::imgcodecs::IMREAD_COLOR).ok()?;
+    let mut bgra = opencv::core::Mat::default();
+    opencv::imgproc::cvt_color(&img, &mut bgra, opencv::imgproc::COLOR_BGR2BGRA, 0).ok()?;
+    Some(bgra)
+}
 
 #[tokio::main]
 async fn main() {
@@ -23,6 +32,7 @@ async fn main() {
         det_threshold: 0.3,
         rec_threshold: 0.5,
         unclip_ratio: 2.0,
+        ..Default::default()
     };
 
     println!("Initializing OCR engine...");
@@ -60,10 +70,10 @@ async fn main() {
         print!("[{}/{}] {} ... ", i + 1, entries.len(), filename);
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
-        let img = match image::open(&img_path) {
-            Ok(img) => img,
-            Err(e) => {
-                println!("FAILED to load: {}", e);
+        let img = match load_image_as_bgra_mat(&img_path.to_string_lossy()) {
+            Some(m) => m,
+            None => {
+                println!("FAILED to load");
                 continue;
             }
         };

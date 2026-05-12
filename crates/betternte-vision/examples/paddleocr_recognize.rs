@@ -6,6 +6,7 @@
 //!   cargo run --example paddleocr_recognize -- <image_path>
 
 use betternte_vision::models::ocr::PaddleOcrEngine;
+use opencv::prelude::*;
 use std::path::Path;
 use std::time::Instant;
 
@@ -35,16 +36,24 @@ fn main() {
     };
     println!("模型加载耗时: {:.2}s\n", t0.elapsed().as_secs_f64());
 
-    // 加载图片
-    let img = match image::open(Path::new(image_path)) {
-        Ok(img) => img,
+    // 加载图片 as BGRA Mat
+    let img = match opencv::imgcodecs::imread(image_path, opencv::imgcodecs::IMREAD_COLOR) {
+        Ok(m) => {
+            // BGR → BGRA to match screen capture format
+            let mut bgra = opencv::core::Mat::default();
+            if let Err(e) = opencv::imgproc::cvt_color(&m, &mut bgra, opencv::imgproc::COLOR_BGR2BGRA, 0) {
+                eprintln!("cvtColor failed: {}", e);
+                return;
+            }
+            bgra
+        }
         Err(e) => {
             eprintln!("图片加载失败: {}", e);
             eprintln!("提示: 请提供图片路径作为参数，或确保 test.png 存在");
             return;
         }
     };
-    println!("图片: {} ({}x{})", image_path, img.width(), img.height());
+    println!("图片: {} ({}x{})", image_path, img.cols(), img.rows());
 
     // 推理
     let t1 = Instant::now();

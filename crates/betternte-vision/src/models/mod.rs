@@ -175,7 +175,7 @@ impl ModelHub {
     pub async fn ocr(
         &self,
         name: &str,
-        image: &image::DynamicImage,
+        image: &opencv::core::Mat,
     ) -> Result<Vec<ocr::OcrResult>, VisionError> {
         let engine = self
             .ocr_engines

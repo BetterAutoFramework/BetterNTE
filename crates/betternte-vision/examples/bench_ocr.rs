@@ -7,7 +7,7 @@
 //!   cargo run --example bench_ocr
 
 use betternte_vision::{OcrConfig, OcrEngine, PaddleOcrEngine};
-use image::GenericImageView;
+use opencv::prelude::*;
 use std::path::Path;
 use std::time::Instant;
 
@@ -22,6 +22,19 @@ fn truncate_text(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Load an image from disk as a BGRA Mat (to match screen capture format).
+fn load_image_as_bgra_mat(path: &Path) -> Option<opencv::core::Mat> {
+    let img = opencv::imgcodecs::imread(
+        &path.to_string_lossy(),
+        opencv::imgcodecs::IMREAD_COLOR,
+    )
+    .ok()?;
+    // cvtColor BGR → BGRA so the OCR engine gets the same format as screen capture
+    let mut bgra = opencv::core::Mat::default();
+    opencv::imgproc::cvt_color(&img, &mut bgra, opencv::imgproc::COLOR_BGR2BGRA, 0).ok()?;
+    Some(bgra)
+}
+
 #[tokio::main]
 async fn main() {
     println!("=== OCR Performance Benchmark ===");
@@ -34,8 +47,15 @@ async fn main() {
         return;
     }
 
-    let img = image::open(img_path).expect("Failed to load image");
-    let (w, h) = img.dimensions();
+    let img = match load_image_as_bgra_mat(img_path) {
+        Some(m) => m,
+        None => {
+            eprintln!("Failed to load image as Mat: {}", IMAGE_PATH);
+            return;
+        }
+    };
+    let w = img.cols() as u32;
+    let h = img.rows() as u32;
     let mpx = (w as f64 * h as f64) / 1_000_000.0;
     println!("Image: {}", IMAGE_PATH);
     println!("Resolution: {} x {} ({:.2} MPx)\n", w, h, mpx);
@@ -52,6 +72,7 @@ async fn main() {
                 det_threshold: 0.3,
                 rec_threshold: 0.5,
                 unclip_ratio: 2.0,
+                ..Default::default()
             },
         ),
         (
@@ -65,6 +86,7 @@ async fn main() {
                 det_threshold: 0.3,
                 rec_threshold: 0.5,
                 unclip_ratio: 2.0,
+                ..Default::default()
             },
         ),
         (
@@ -78,6 +100,7 @@ async fn main() {
                 det_threshold: 0.3,
                 rec_threshold: 0.5,
                 unclip_ratio: 2.0,
+                ..Default::default()
             },
         ),
     ];

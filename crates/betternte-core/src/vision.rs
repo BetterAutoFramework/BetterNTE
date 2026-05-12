@@ -8,7 +8,7 @@ use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::image::{BoundingBox, CaptureFrame, Color, Point, Region};
+use crate::image::{BoundingBox, Color, Point, Region};
 
 // ============================================================================
 // 配置类型
@@ -183,14 +183,19 @@ pub enum OcrError {
 /// OCR 引擎 trait。
 ///
 /// OCR engine trait. Implementations must be `Send + Sync` for use in async contexts.
+///
+/// All image parameters are OpenCV `Mat` (BGRA from screen capture).
+/// Implementations handle color conversion and preprocessing internally.
 #[async_trait]
 pub trait OcrEngine: Send + Sync {
     fn name(&self) -> &str;
     async fn init(&mut self, config: &OcrConfig) -> Result<(), OcrError>;
-    async fn recognize(&self, image: &DynamicImage) -> Result<Vec<TextRegion>, OcrError>;
+    /// Recognize text in the entire Mat image.
+    async fn recognize(&self, image: &opencv::core::Mat) -> Result<Vec<TextRegion>, OcrError>;
+    /// Recognize text within a sub-region of the Mat image (zero-copy roi crop).
     async fn recognize_region(
         &self,
-        frame: &CaptureFrame,
+        image: &opencv::core::Mat,
         region: &Region,
     ) -> Result<Vec<TextRegion>, OcrError>;
     fn is_ready(&self) -> bool;
