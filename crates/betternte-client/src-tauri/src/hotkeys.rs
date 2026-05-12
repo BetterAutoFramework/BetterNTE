@@ -2,10 +2,13 @@
 
 use std::collections::HashSet;
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use crate::AppState;
+
+/// Import ScriptContext trait so we can call save_screenshot on Arc<EngineScriptContext>
+use betternte_script::ScriptContext as _;
 
 /// Register global hotkeys from current engine config.
 ///
@@ -128,6 +131,96 @@ pub async fn register_hotkeys(
                 "Toggle overlay hotkey conflicts with existing registration"
             );
             failed.push(format!("切换叠层({})", toggle_overlay_shortcut));
+        }
+    }
+
+    // ── Screenshot ────────────────────────────────────────────────────
+    let screenshot_shortcut = {
+        let guard = state.engine.read().await;
+        let engine = guard.as_ref().ok_or("Engine not initialized")?;
+        engine.config().hotkeys.screenshot.trim().to_string()
+    };
+
+    if !screenshot_shortcut.is_empty() {
+        if taken.insert(screenshot_shortcut.clone()) {
+            let app_handle = app.clone();
+            match manager.on_shortcut(
+                screenshot_shortcut.as_str(),
+                move |_app, _shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let app_for_task = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app_for_task.state::<AppState>();
+                        let guard = state.engine.read().await;
+                        let Some(engine) = guard.as_ref() else {
+                            tracing::warn!("Screenshot hotkey fired but engine is not initialized");
+                            return;
+                        };
+
+                        // Try script context first (engine must be running with capture active)
+                        if let Some(ctx) = engine.script_ctx_handle() {
+                            match ctx.save_screenshot(false).await {
+                                Ok(path) => {
+                                    tracing::info!(path = %path, "Screenshot saved via hotkey");
+                                    let _ = app_for_task.emit("screenshot_saved", &path);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Screenshot via script context failed, trying fallback");
+                                }
+                            }
+                        } else {
+                            // Fallback: use test_screenshot and save manually
+                            match engine.test_screenshot().await {
+                                Ok(png) => {
+                                    let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+                                    let save_dir = std::path::PathBuf::from(&user_profile)
+                                        .join("Pictures")
+                                        .join("BetterNTE");
+                                    let _ = tokio::fs::create_dir_all(&save_dir).await;
+                                    let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+                                    let filename = format!("screenshot_{}.png", ts);
+                                    let full = save_dir.join(&filename);
+                                    match tokio::fs::write(&full, &png).await {
+                                        Ok(_) => {
+                                            tracing::info!(path = %full.display(), "Screenshot saved via hotkey (fallback)");
+                                            let _ = app_for_task.emit("screenshot_saved", full.to_string_lossy().as_ref());
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(error = %e, "Failed to save screenshot");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "Screenshot hotkey: both script context and fallback failed");
+                                }
+                            }
+                        }
+                    });
+                },
+            ) {
+                Ok(()) => {
+                    tracing::info!(
+                        hotkey = %screenshot_shortcut,
+                        "Registered screenshot hotkey"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        hotkey = %screenshot_shortcut,
+                        error = %e,
+                        "Failed to register screenshot hotkey; clearing from config"
+                    );
+                    failed.push(format!("截图({})", screenshot_shortcut));
+                }
+            }
+        } else {
+            tracing::warn!(
+                hotkey = %screenshot_shortcut,
+                "Screenshot hotkey conflicts with existing registration"
+            );
+            failed.push(format!("截图({})", screenshot_shortcut));
         }
     }
 
@@ -307,6 +400,8 @@ pub async fn register_hotkeys(
                     cfg.hotkeys.emergency_stop.clear();
                 } else if label.starts_with("切换叠层") {
                     cfg.hotkeys.toggle_overlay.clear();
+                } else if label.starts_with("截图") {
+                    cfg.hotkeys.screenshot.clear();
                 }
             }
 
