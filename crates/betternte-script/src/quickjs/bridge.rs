@@ -527,6 +527,7 @@ pub fn register_ctx_api<'js>(
             keyPress: wrapVoidAsync("keyPress"),
             keyCombo: wrapVoidAsync("keyCombo"),
             typeText: wrapVoidAsync("typeText"),
+            replay: wrapVoidAsync("replay"),
             // Wait (time-based)
             sleep: wrapVoidAsync("sleep"),
             waitForTemplate: wrapAsync("waitForTemplate"),
@@ -616,6 +617,7 @@ pub fn register_ctx_api<'js>(
         "keyPress",
         "keyCombo",
         "typeText",
+        "replay",
         // Wait (time-based)
         "sleep",
         "waitForTemplate",
@@ -1141,6 +1143,7 @@ async fn dispatch_ctx_method(
         "keyPress"        => dispatch_void!(ctx, key_press, &arg_str(args, 0), args.get(1).and_then(|v| v.as_u64()).map(|v| v as u32)),
         "keyCombo"        => dispatch_void!(ctx, key_combo, &arg_str_array(args, 0)),
         "typeText"        => dispatch_void!(ctx, type_text, &arg_str(args, 0)),
+        "replay"          => dispatch_void!(ctx, replay, &arg_str(args, 0), args.get(1).and_then(|v| v.as_u64()).map(|v| v as u32)),
 
         // ━━━ Wait (time-based) ━━━
         "sleep"           => dispatch_void!(ctx, sleep, arg_u64(args, 0)),

@@ -454,7 +454,7 @@ fn validate_path_in(base: &Path, user_input: &str) -> Result<PathBuf, String> {
 fn find_workspace_root(start: &PathBuf) -> Option<PathBuf> {
     let mut dir = start.as_path();
     loop {
-        if dir.join("scripts").is_dir() && dir.join("Cargo.toml").exists() {
+        if dir.join("Cargo.toml").exists() && dir.join("data").is_dir() {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;

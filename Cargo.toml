@@ -12,6 +12,7 @@ members = [
     "crates/betternte-runtime",
     "crates/betternte-script",
     "crates/betternte-client/src-tauri",
+    "tools/key-recorder",
 ]
 
 exclude = ["tools/window-pixel-studio/src-tauri"]

@@ -15,7 +15,8 @@ pub fn manifest_permission_key_for_ctx_method(method: &str) -> Option<&'static s
 
         // Input
         "click" | "doubleClick" | "rightClick" | "mouseMove" | "mouseDown" | "mouseUp"
-        | "scroll" | "swipe" | "keyDown" | "keyUp" | "keyPress" | "keyCombo" | "typeText" => {
+        | "scroll" | "swipe" | "keyDown" | "keyUp" | "keyPress" | "keyCombo" | "typeText"
+        | "replay" => {
             Some("click")
         }
 

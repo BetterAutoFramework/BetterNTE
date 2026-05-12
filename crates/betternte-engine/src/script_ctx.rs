@@ -2599,6 +2599,55 @@ impl ScriptContext for EngineScriptContext {
         result
     }
 
+    async fn replay(&self, path: &str, loop_count: Option<u32>) -> Result<()> {
+        // Relative paths: read from script's store dir first, then fall back to system path.
+        let json = if std::path::Path::new(path).is_absolute() {
+            self.read_file(path).await?
+        } else {
+            match self.read_store_file(path).await {
+                Ok(content) => content,
+                Err(_) => self.read_file(path).await?,
+            }
+        };
+        let mut mac: betternte_input::Macro =
+            serde_json::from_str(&json).map_err(|e| anyhow::anyhow!("failed to parse macro JSON: {e}"))?;
+        if let Some(count) = loop_count {
+            mac.loop_count = count;
+        }
+
+        let guard = self.input_controller.lock().await;
+        let ctrl = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no input controller available for replay"))?;
+
+        use betternte_input::InputAction;
+
+        let loops = if mac.loop_count == 0 { u32::MAX } else { mac.loop_count };
+        for _ in 0..loops {
+            let mut last_offset = 0u64;
+            for event in &mac.events {
+                let delay = event.offset_ms.saturating_sub(last_offset);
+                if delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                last_offset = event.offset_ms;
+
+                match &event.action {
+                    InputAction::MouseMove { x, y } => { ctrl.mouse_move(*x, *y).await?; }
+                    InputAction::MouseDown { button } => { ctrl.mouse_down(*button).await?; }
+                    InputAction::MouseUp { button } => { ctrl.mouse_up(*button).await?; }
+                    InputAction::KeyDown { key } => { ctrl.key_press(*key).await?; }
+                    InputAction::KeyUp { key } => { ctrl.key_release(*key).await?; }
+                    InputAction::Scroll { delta } => { ctrl.mouse_scroll(*delta).await?; }
+                    InputAction::Sleep { ms } => {
+                        tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn sleep(&self, ms: u64) -> Result<()> {
         tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
         Ok(())

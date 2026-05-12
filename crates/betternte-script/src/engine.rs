@@ -240,6 +240,17 @@ pub trait ScriptContext: Send + Sync {
     async fn key_combo(&self, keys: &[String]) -> Result<()>;
     async fn type_text(&self, text: &str) -> Result<()>;
 
+    /// Replay a recorded macro JSON file.
+    ///
+    /// Reads a macro file (produced by `key-recorder` CLI tool) and plays back
+    /// all recorded input events with original timing.
+    ///
+    /// - `path`: path to the JSON macro file (relative to script dir or absolute)
+    /// - `loop_count`: override loop count (None = use file's loop_count, 0 = infinite)
+    async fn replay(&self, _path: &str, _loop_count: Option<u32>) -> Result<()> {
+        Err(anyhow::anyhow!("replay not supported"))
+    }
+
     // === 等待 (time-based) ===
     async fn sleep(&self, ms: u64) -> Result<()>;
     /// Same options as [`Self::find_template`] (`roi`, `threshold`). Pass `None` for full-screen.
