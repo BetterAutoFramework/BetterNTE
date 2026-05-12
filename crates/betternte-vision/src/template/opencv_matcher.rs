@@ -72,28 +72,18 @@ impl OpenCvTemplateMatcher {
         Ok(mat_3d.try_clone()?)
     }
 
-    /// Convert BGRA frame to BGR by splitting channels and merging first 3.
-    /// Faster than cvtColor for this specific conversion.
-    fn bgra_to_bgr_fast(bgra: &Mat) -> anyhow::Result<Mat> {
-        let mut channels = core::Vector::<Mat>::new();
-        core::split(bgra, &mut channels)?;
-        // channels: [B, G, R, A] — take first 3
-        let bgr_channels = core::Vector::<Mat>::from(vec![
-            channels.get(0)?,
-            channels.get(1)?,
-            channels.get(2)?,
-        ]);
+    /// Convert BGRA frame to BGR using cvtColor (SIMD-optimized).
+    fn bgra_to_bgr(bgra: &Mat) -> anyhow::Result<Mat> {
         let mut bgr = Mat::default();
-        core::merge(&bgr_channels, &mut bgr)?;
+        imgproc::cvt_color(bgra, &mut bgr, imgproc::COLOR_BGRA2BGR, 0)?;
         Ok(bgr)
     }
 
-    /// Convert BGRA frame to Gray by extracting single channel.
-    fn bgra_to_gray_fast(bgra: &Mat) -> anyhow::Result<Mat> {
-        let mut channels = core::Vector::<Mat>::new();
-        core::split(bgra, &mut channels)?;
-        // Take B channel (index 0) as grayscale approximation
-        Ok(channels.get(0)?)
+    /// Convert BGRA frame to Gray using cvtColor (proper weighted luminance).
+    fn bgra_to_gray(bgra: &Mat) -> anyhow::Result<Mat> {
+        let mut gray = Mat::default();
+        imgproc::cvt_color(bgra, &mut gray, imgproc::COLOR_BGRA2GRAY, 0)?;
+        Ok(gray)
     }
 
     /// Ensure Mat variants are cached for a template. Returns the variants.
@@ -171,8 +161,8 @@ impl OpenCvTemplateMatcher {
         let mat_variants = self.ensure_mat_variants(template)?;
 
         let (img_mat, tpl_mat, tpl_w, tpl_h) = if params.grayscale {
-            // Fast BGRA → Gray via channel split (skip cvtColor)
-            let gray = Self::bgra_to_gray_fast(image)?;
+            // BGRA → Gray via cvtColor (SIMD, proper luminance)
+            let gray = Self::bgra_to_gray(image)?;
             // Use cached gray Mat or fall back to computing it
             let tpl_gray = match mat_variants.gray {
                 Some(ref m) => m.clone(),
@@ -188,8 +178,8 @@ impl OpenCvTemplateMatcher {
             let h = tpl_gray.rows() as u32;
             (gray, tpl_gray, w, h)
         } else {
-            // Fast BGRA → BGR via channel split (skip cvtColor)
-            let bgr = Self::bgra_to_bgr_fast(image)?;
+            // BGRA → BGR via cvtColor (SIMD, single pass)
+            let bgr = Self::bgra_to_bgr(image)?;
             // Use cached BGR Mat or fall back to computing it
             let tpl_bgr = match mat_variants.bgr {
                 Some(ref m) => m.clone(),
