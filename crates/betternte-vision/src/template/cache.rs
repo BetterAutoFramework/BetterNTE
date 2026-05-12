@@ -1,18 +1,31 @@
 //! Template cache with LRU eviction policy
 //!
-//! Thread-safe template storage using RwLock + LruCache
+//! Thread-safe template storage using RwLock + LruCache.
+//! Also caches pre-processed OpenCV Mat (BGR and Gray) to avoid
+//! repeated conversion on every matchTemplate call.
 
 use crate::error::VisionError;
 use lru::LruCache;
+use opencv::core::Mat;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::RwLock;
 use std::time::SystemTime;
 
+/// Pre-processed OpenCV Mat variants of a template image.
+#[derive(Clone)]
+pub struct MatVariants {
+    /// BGR 3-channel Mat (for color matching)
+    pub bgr: Option<Mat>,
+    /// Grayscale single-channel Mat (for grayscale matching)
+    pub gray: Option<Mat>,
+}
+
 #[derive(Clone)]
 struct CacheEntry {
     image: image::DynamicImage,
     modified: Option<SystemTime>,
+    mats: MatVariants,
 }
 
 /// Thread-safe template cache with LRU eviction
@@ -65,7 +78,7 @@ impl TemplateCache {
             VisionError::ImageProcessingError(format!("Failed to load template: {}", e))
         })?;
 
-        // Store in cache
+        // Store in cache (Mat variants will be populated lazily on first match)
         {
             let mut cache = self.cache.write().unwrap();
             cache.push(
@@ -73,6 +86,7 @@ impl TemplateCache {
                 CacheEntry {
                     image: img.clone(),
                     modified,
+                    mats: MatVariants { bgr: None, gray: None },
                 },
             );
         }
@@ -92,6 +106,13 @@ impl TemplateCache {
         cache.get(key).map(|entry| entry.image.clone())
     }
 
+    /// Get pre-processed Mat variants for a template.
+    /// Returns None if the template is not cached or has no Mat variants.
+    pub fn get_mat_variants(&self, key: &str) -> Option<MatVariants> {
+        let mut cache = self.cache.write().unwrap();
+        cache.get(key).map(|entry| entry.mats.clone())
+    }
+
     /// Insert template into cache
     pub fn insert(&self, key: String, template: image::DynamicImage) {
         let mut cache = self.cache.write().unwrap();
@@ -100,8 +121,34 @@ impl TemplateCache {
             CacheEntry {
                 image: template,
                 modified: None,
+                mats: MatVariants { bgr: None, gray: None },
             },
         );
+    }
+
+    /// Insert template with pre-computed Mat variants
+    pub fn insert_with_mats(&self, key: String, template: image::DynamicImage, mats: MatVariants) {
+        let mut cache = self.cache.write().unwrap();
+        cache.push(
+            key,
+            CacheEntry {
+                image: template,
+                modified: None,
+                mats,
+            },
+        );
+    }
+
+    /// Update only the Mat variants for an existing cache entry.
+    /// Returns true if the entry was found and updated.
+    pub fn update_mat_variants(&self, key: &str, mats: MatVariants) -> bool {
+        let mut cache = self.cache.write().unwrap();
+        if let Some(entry) = cache.get_mut(key) {
+            entry.mats = mats;
+            true
+        } else {
+            false
+        }
     }
 
     /// Clear the cache

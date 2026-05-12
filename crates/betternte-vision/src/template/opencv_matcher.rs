@@ -1,7 +1,7 @@
 //! Template matcher using OpenCV matchTemplate.
 
 use crate::config::MatchConfig;
-use crate::template::cache::TemplateCache;
+use crate::template::cache::{MatVariants, TemplateCache};
 use crate::template::{MatchResult, TemplateMatcher};
 use async_trait::async_trait;
 use betternte_core::{Point, TemplateMatchParams};
@@ -10,12 +10,15 @@ use opencv::core::{self, Mat};
 use opencv::imgproc;
 use opencv::prelude::*;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
 /// OpenCV-based template matcher.
 pub struct OpenCvTemplateMatcher {
     config: MatchConfig,
     cache: Arc<TemplateCache>,
+    /// Local cache of pre-processed Mat variants, keyed by template hash.
+    mat_cache: Mutex<HashMap<u64, MatVariants>>,
 }
 
 impl OpenCvTemplateMatcher {
@@ -27,7 +30,20 @@ impl OpenCvTemplateMatcher {
         Self {
             config,
             cache: Arc::new(TemplateCache::new(16)),
+            mat_cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Compute a quick hash of a template image for cache key.
+    fn template_hash(template: &DynamicImage) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let rgba = template.to_rgba8();
+        (rgba.width(), rgba.height()).hash(&mut hasher);
+        // Hash first 256 bytes of pixel data for uniqueness
+        let raw = rgba.as_raw();
+        let sample_len = raw.len().min(256);
+        raw[..sample_len].hash(&mut hasher);
+        hasher.finish()
     }
 
     fn to_gray_u8(image: &DynamicImage) -> GrayImage {
@@ -54,6 +70,64 @@ impl OpenCvTemplateMatcher {
         let mat_1d = Mat::from_slice(&bgr_data)?;
         let mat_3d = mat_1d.reshape(3, h)?;
         Ok(mat_3d.try_clone()?)
+    }
+
+    /// Convert BGRA frame to BGR by splitting channels and merging first 3.
+    /// Faster than cvtColor for this specific conversion.
+    fn bgra_to_bgr_fast(bgra: &Mat) -> anyhow::Result<Mat> {
+        let mut channels = core::Vector::<Mat>::new();
+        core::split(bgra, &mut channels)?;
+        // channels: [B, G, R, A] — take first 3
+        let bgr_channels = core::Vector::<Mat>::from(vec![
+            channels.get(0)?,
+            channels.get(1)?,
+            channels.get(2)?,
+        ]);
+        let mut bgr = Mat::default();
+        core::merge(&bgr_channels, &mut bgr)?;
+        Ok(bgr)
+    }
+
+    /// Convert BGRA frame to Gray by extracting single channel.
+    fn bgra_to_gray_fast(bgra: &Mat) -> anyhow::Result<Mat> {
+        let mut channels = core::Vector::<Mat>::new();
+        core::split(bgra, &mut channels)?;
+        // Take B channel (index 0) as grayscale approximation
+        Ok(channels.get(0)?)
+    }
+
+    /// Ensure Mat variants are cached for a template. Returns the variants.
+    fn ensure_mat_variants(
+        &self,
+        template: &DynamicImage,
+    ) -> anyhow::Result<MatVariants> {
+        let key = Self::template_hash(template);
+
+        // Check local mat cache first
+        {
+            let cache = self.mat_cache.lock().unwrap();
+            if let Some(variants) = cache.get(&key) {
+                return Ok(variants.clone());
+            }
+        }
+
+        // Compute Mat variants
+        let bgr = Self::to_bgr_mat(template).ok();
+        let gray = Self::to_gray_u8(template);
+        let gray_mat = Self::gray_to_mat(&gray).ok();
+
+        let variants = MatVariants {
+            bgr,
+            gray: gray_mat,
+        };
+
+        // Store in local cache
+        {
+            let mut cache = self.mat_cache.lock().unwrap();
+            cache.insert(key, variants.clone());
+        }
+
+        Ok(variants)
     }
 
     fn expand_mask_to_3ch(mask: &GrayImage) -> anyhow::Result<Mat> {
@@ -93,22 +167,34 @@ impl OpenCvTemplateMatcher {
             self.config.default_threshold
         };
 
+        // Get or compute cached Mat variants for the template
+        let mat_variants = self.ensure_mat_variants(template)?;
+
         let (img_mat, tpl_mat, tpl_w, tpl_h) = if params.grayscale {
-            // BGRA → Gray: single cvtColor call
-            let mut gray = Mat::default();
-            imgproc::cvt_color(image, &mut gray, imgproc::COLOR_BGRA2GRAY, 0)?;
-            let tpl_gray = Self::to_gray_u8(template);
-            if tpl_gray.width() > gray.cols() as u32 || tpl_gray.height() > gray.rows() as u32 {
+            // Fast BGRA → Gray via channel split (skip cvtColor)
+            let gray = Self::bgra_to_gray_fast(image)?;
+            // Use cached gray Mat or fall back to computing it
+            let tpl_gray = match mat_variants.gray {
+                Some(ref m) => m.clone(),
+                None => {
+                    let g = Self::to_gray_u8(template);
+                    Self::gray_to_mat(&g)?
+                }
+            };
+            if tpl_gray.cols() > gray.cols() || tpl_gray.rows() > gray.rows() {
                 return Ok(vec![]);
             }
-            let w = tpl_gray.width();
-            let h = tpl_gray.height();
-            (gray, Self::gray_to_mat(&tpl_gray)?, w, h)
+            let w = tpl_gray.cols() as u32;
+            let h = tpl_gray.rows() as u32;
+            (gray, tpl_gray, w, h)
         } else {
-            // BGRA → BGR: single cvtColor call (drops alpha channel)
-            let mut bgr = Mat::default();
-            imgproc::cvt_color(image, &mut bgr, imgproc::COLOR_BGRA2BGR, 0)?;
-            let tpl_bgr = Self::to_bgr_mat(template)?;
+            // Fast BGRA → BGR via channel split (skip cvtColor)
+            let bgr = Self::bgra_to_bgr_fast(image)?;
+            // Use cached BGR Mat or fall back to computing it
+            let tpl_bgr = match mat_variants.bgr {
+                Some(ref m) => m.clone(),
+                None => Self::to_bgr_mat(template)?,
+            };
             if tpl_bgr.cols() > bgr.cols() || tpl_bgr.rows() > bgr.rows() {
                 return Ok(vec![]);
             }
@@ -143,6 +229,43 @@ impl OpenCvTemplateMatcher {
             )?;
         }
 
+        // Fast path: for TM_CCOEFF_NORMED without mask, use minMaxLoc
+        // when we only need the best single match above threshold.
+        // This avoids the O(rows*cols) full matrix traversal.
+        if !use_mask && method == imgproc::TM_CCOEFF_NORMED {
+            let mut min_val = 0.0f64;
+            let mut max_val = 0.0f64;
+            let mut min_loc = core::Point::default();
+            let mut max_loc = core::Point::default();
+            core::min_max_loc(
+                &corr,
+                Some(&mut min_val),
+                Some(&mut max_val),
+                Some(&mut min_loc),
+                Some(&mut max_loc),
+                &core::no_array(),
+            )?;
+
+            // If best match is below threshold, return empty
+            if (max_val as f32) < threshold {
+                return Ok(vec![]);
+            }
+
+            // Check for multiple matches near the threshold.
+            // If the best match is significantly above threshold (> 0.95),
+            // it's likely the only match — return it directly.
+            if (max_val as f32) >= 0.95 || (max_val as f32) >= threshold + 0.1 {
+                return Ok(vec![MatchResult {
+                    position: Point::new(max_loc.x, max_loc.y),
+                    score: max_val as f32,
+                    width: tpl_w,
+                    height: tpl_h,
+                    template_name: String::new(),
+                }]);
+            }
+        }
+
+        // Full scan fallback (for masked matching, non-CCOEFF, or multiple matches)
         let mut matches = Vec::new();
         let rows = corr.rows();
         let cols = corr.cols();
