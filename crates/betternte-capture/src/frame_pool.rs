@@ -4,12 +4,15 @@
 //! independently reads the latest available frame via [`FramePool::wait_latest`].
 //! Slow consumers automatically skip stale frames — they always see the most
 //! recent state, which is what automation logic cares about.
+//!
+//! Uses `tokio::sync::watch` internally — lock-free, designed exactly for this
+//! single-producer multi-consumer latest-value pattern.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use betternte_core::CaptureFrame;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 
 /// Shared frame pool for decoupled capture ↔ consumption.
 ///
@@ -19,28 +22,27 @@ use tokio::sync::Notify;
 /// - **Latest-only**: only the most recent frame is retained. Slow consumers
 ///   automatically skip intermediate frames.
 /// - **Zero-copy**: frame pixel data is `Arc<Vec<u8>>`, so `clone()` is O(1).
+/// - **Lock-free**: uses `tokio::sync::watch` — no Mutex, no contention.
 #[derive(Clone)]
 pub struct FramePool {
     inner: Arc<FramePoolInner>,
 }
 
 struct FramePoolInner {
-    /// The most recent frame (replaced on every push).
-    frame: std::sync::Mutex<Option<CaptureFrame>>,
-    /// Sequence number of the latest frame.
+    /// watch channel: producer sends latest frame, consumers receive it.
+    tx: watch::Sender<Option<CaptureFrame>>,
+    /// Sequence number of the latest frame (fast atomic check).
     latest_sequence: AtomicU64,
-    /// Notified on every push so consumers can wake up.
-    notify: Notify,
 }
 
 impl FramePool {
     /// Create a new empty frame pool.
     pub fn new() -> Self {
+        let (tx, _) = watch::channel(None);
         Self {
             inner: Arc::new(FramePoolInner {
-                frame: std::sync::Mutex::new(None),
+                tx,
                 latest_sequence: AtomicU64::new(0),
-                notify: Notify::new(),
             }),
         }
     }
@@ -50,22 +52,19 @@ impl FramePool {
     /// Replaces the previous frame and wakes all waiting consumers.
     pub fn push(&self, frame: CaptureFrame) {
         let seq = frame.sequence;
-        {
-            let mut guard = self.inner.frame.lock().unwrap();
-            *guard = Some(frame);
-        }
         self.inner.latest_sequence.store(seq, Ordering::Release);
-        self.inner.notify.notify_waiters();
+        // watch::Sender::send replaces the value and notifies all receivers.
+        let _ = self.inner.tx.send(Some(frame));
     }
 
     /// Get the latest frame without waiting (non-blocking).
     ///
     /// Returns `None` if no frame has been pushed yet.
     pub fn latest(&self) -> Option<CaptureFrame> {
-        self.inner.frame.lock().unwrap().clone()
+        self.inner.tx.borrow().clone()
     }
 
-    /// Wait for and return the latest frame (blocking/async).
+    /// Wait for and return the latest frame (async).
     ///
     /// If a frame is already available, returns it immediately.
     /// Otherwise waits until the next [`FramePool::push`].
@@ -73,16 +72,16 @@ impl FramePool {
     /// **Note**: If multiple frames arrive while no consumer is waiting,
     /// only the latest one is returned — intermediate frames are skipped.
     pub async fn wait_latest(&self) -> CaptureFrame {
+        let mut rx = self.inner.tx.subscribe();
         loop {
-            let notified = self.inner.notify.notified();
-            tokio::pin!(notified);
-
-            // Check first (avoids missed notification race).
-            if let Some(frame) = self.latest() {
-                return frame;
+            {
+                let frame = rx.borrow_and_update().clone();
+                if let Some(f) = frame {
+                    return f;
+                }
             }
             // No frame yet — wait for the next push.
-            notified.await;
+            let _ = rx.changed().await;
         }
     }
 
@@ -91,16 +90,17 @@ impl FramePool {
     /// Useful for consumers that want to process every frame without skipping.
     /// Returns the latest frame whose sequence > `after_sequence`.
     pub async fn wait_newer_than(&self, after_sequence: u64) -> CaptureFrame {
+        let mut rx = self.inner.tx.subscribe();
         loop {
-            let notified = self.inner.notify.notified();
-            tokio::pin!(notified);
-
-            if let Some(frame) = self.latest() {
-                if frame.sequence > after_sequence {
-                    return frame;
+            {
+                let frame = rx.borrow_and_update().clone();
+                if let Some(ref f) = frame {
+                    if f.sequence > after_sequence {
+                        return frame.unwrap();
+                    }
                 }
             }
-            notified.await;
+            let _ = rx.changed().await;
         }
     }
 
