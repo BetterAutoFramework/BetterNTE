@@ -68,8 +68,10 @@ pub use betternte_core::{ColorDetector, OcrEngine};
 
 // OCR engine implementations
 
-use betternte_core::{BoundingBox, CaptureFrame, Color, Region};
-use image::DynamicImage;
+use betternte_core::{BoundingBox, Color, Region};
+use opencv::prelude::MatTraitConst;
+use opencv::core::Vec3b;
+use opencv::prelude::MatTrait;
 use std::path::PathBuf;
 
 /// Parse a color string like "#RRGGBB", "RRGGBB", or "R,G,B" into (r, g, b).
@@ -99,28 +101,57 @@ pub fn parse_color_str(s: &str) -> Option<(u8, u8, u8)> {
     None
 }
 
-/// Apply text color filter: keep pixels within tolerance of target color, make others black.
-pub fn apply_text_color_filter(img: &DynamicImage, target: (u8, u8, u8), tolerance: u8) -> DynamicImage {
-    let rgb = img.to_rgb8();
-    let (w, h) = rgb.dimensions();
-    let (tr, tg, tb) = target;
+/// Apply text color filter on a BGR Mat: keep pixels within tolerance of target color, make others black.
+/// Returns a new BGR Mat.
+pub fn apply_text_color_filter(
+    img: &opencv::core::Mat,
+    target: (u8, u8, u8),
+    tolerance: u8,
+) -> opencv::core::Mat {
+    let h = MatTraitConst::rows(img);
+    let w = MatTraitConst::cols(img);
+    let channels = MatTraitConst::channels(img);
     let tol = tolerance as i16;
+    let (tr, tg, tb) = target;
 
-    let filtered = image::ImageBuffer::from_fn(w, h, |x, y| {
-        let p = rgb.get_pixel(x, y);
-        let dr = (p[0] as i16 - tr as i16).abs();
-        let dg = (p[1] as i16 - tg as i16).abs();
-        let db = (p[2] as i16 - tb as i16).abs();
-        if dr <= tol && dg <= tol && db <= tol {
-            // Keep original pixel (text)
-            image::Rgb([p[0], p[1], p[2]])
-        } else {
-            // Background -> black
-            image::Rgb([0u8, 0, 0])
+    let mut out = opencv::core::Mat::new_rows_cols_with_default(
+        h,
+        w,
+        opencv::core::CV_8UC3,
+        opencv::core::Scalar::all(0.0),
+    )
+    .unwrap_or_default();
+
+    // If input is BGRA, convert to BGR first
+    let bgr = if channels == 4 {
+        let mut tmp = opencv::core::Mat::default();
+        let _ = opencv::imgproc::cvt_color(img, &mut tmp, opencv::imgproc::COLOR_BGRA2BGR, 0);
+        tmp
+    } else {
+        img.clone()
+    };
+
+    for y in 0..h {
+        for x in 0..w {
+            let src_px = match bgr.at_2d::<Vec3b>(y, x) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let b = src_px[0] as i16;
+            let g = src_px[1] as i16;
+            let r = src_px[2] as i16;
+            let dr = (r - tr as i16).abs();
+            let dg = (g - tg as i16).abs();
+            let db = (b - tb as i16).abs();
+            if dr <= tol && dg <= tol && db <= tol {
+                if let Ok(out_px) = out.at_2d_mut::<Vec3b>(y, x) {
+                    *out_px = *src_px;
+                }
+            }
         }
-    });
+    }
 
-    DynamicImage::ImageRgb8(filtered)
+    out
 }
 
 /// PaddleOCR 引擎（桩实现，待接入 ONNX 模型）
@@ -259,7 +290,7 @@ impl OcrEngine for PaddleOcrEngine {
 
     async fn recognize(
         &self,
-        image: &DynamicImage,
+        image: &opencv::core::Mat,
     ) -> Result<Vec<TextRegion>, betternte_core::OcrError> {
         if !self.ready {
             return Err(betternte_core::OcrError::OcrError("引擎未初始化".into()));
@@ -269,11 +300,11 @@ impl OcrEngine for PaddleOcrEngine {
         };
 
         // Apply text color filter if configured
-        let filtered_img;
+        let filtered_mat;
         let img = if let Some(ref color_str) = self.config.text_color {
             if let Some(target_color) = parse_color_str(color_str) {
-                filtered_img = apply_text_color_filter(image, target_color, self.config.text_color_tolerance);
-                &filtered_img
+                filtered_mat = apply_text_color_filter(image, target_color, self.config.text_color_tolerance);
+                &filtered_mat
             } else {
                 image
             }
@@ -289,7 +320,7 @@ impl OcrEngine for PaddleOcrEngine {
 
     async fn recognize_region(
         &self,
-        frame: &CaptureFrame,
+        image: &opencv::core::Mat,
         region: &Region,
     ) -> Result<Vec<TextRegion>, betternte_core::OcrError> {
         if !self.ready {
@@ -299,33 +330,34 @@ impl OcrEngine for PaddleOcrEngine {
             return Ok(Vec::new());
         };
 
-        let img = frame
-            .to_dynamic_image()
-            .map_err(|e| betternte_core::OcrError::OcrError(format!("to_dynamic_image: {}", e)))?;
-
-        let x = region.x.max(0) as u32;
-        let y = region.y.max(0) as u32;
-        let max_w = img.width().saturating_sub(x);
-        let max_h = img.height().saturating_sub(y);
-        let w = region.width.min(max_w);
-        let h = region.height.min(max_h);
-        if w == 0 || h == 0 {
+        // Zero-copy ROI crop from Mat
+        let x = region.x.max(0);
+        let y = region.y.max(0);
+        let max_w = image.cols().saturating_sub(x);
+        let max_h = image.rows().saturating_sub(y);
+        let w = (region.width as i32).min(max_w);
+        let h = (region.height as i32).min(max_h);
+        if w <= 0 || h <= 0 {
             return Ok(Vec::new());
         }
 
-        let cropped = img.crop_imm(x, y, w, h);
+        let rect = opencv::core::Rect::new(x, y, w, h);
+        let roi = opencv::core::Mat::roi(image, rect)
+            .map_err(|e| betternte_core::OcrError::OcrError(format!("Mat roi: {}", e)))?
+            .try_clone()
+            .map_err(|e| betternte_core::OcrError::OcrError(format!("Mat roi clone: {}", e)))?;
 
         // Apply text color filter if configured
-        let filtered_img;
-        let img_ref = if let Some(ref color_str) = self.config.text_color {
+        let filtered_mat;
+        let img_ref: &opencv::core::Mat = if let Some(ref color_str) = self.config.text_color {
             if let Some(target_color) = parse_color_str(color_str) {
-                filtered_img = apply_text_color_filter(&cropped, target_color, self.config.text_color_tolerance);
-                &filtered_img
+                filtered_mat = apply_text_color_filter(&roi, target_color, self.config.text_color_tolerance);
+                &filtered_mat
             } else {
-                &cropped
+                &roi
             }
         } else {
-            &cropped
+            &roi
         };
 
         let raw = inner.recognize(img_ref).map_err(|e| {
@@ -410,7 +442,9 @@ mod tests {
     #[tokio::test]
     async fn test_paddle_ocr_engine_recognize_not_ready() {
         let engine = PaddleOcrEngine::new();
-        let img = DynamicImage::new_rgb8(10, 10);
+        let img = opencv::core::Mat::new_rows_cols_with_default(
+            10, 10, opencv::core::CV_8UC4, opencv::core::Scalar::all(128.0),
+        ).unwrap();
         let result = engine.recognize(&img).await;
         assert!(result.is_err());
     }
@@ -419,7 +453,9 @@ mod tests {
     async fn test_paddle_ocr_engine_recognize_empty() {
         let mut engine = PaddleOcrEngine::new();
         engine.init(&OcrConfig::default()).await.unwrap();
-        let img = DynamicImage::new_rgb8(10, 10);
+        let img = opencv::core::Mat::new_rows_cols_with_default(
+            10, 10, opencv::core::CV_8UC4, opencv::core::Scalar::all(0.0),
+        ).unwrap();
         let result = engine.recognize(&img).await.unwrap();
         assert!(result.is_empty());
     }
@@ -439,7 +475,9 @@ mod tests {
     async fn test_ocr_not_ready_returns_error() {
         let engine = PaddleOcrEngine::new();
         assert!(!engine.is_ready());
-        let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 100));
+        let image = opencv::core::Mat::new_rows_cols_with_default(
+            100, 100, opencv::core::CV_8UC4, opencv::core::Scalar::all(0.0),
+        ).unwrap();
         let result = engine.recognize(&image).await;
         assert!(result.is_err());
     }
@@ -448,7 +486,9 @@ mod tests {
     async fn test_ocr_recognize_empty_image_returns_empty() {
         let mut engine = PaddleOcrEngine::new();
         engine.init(&OcrConfig::default()).await.unwrap();
-        let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(10, 10));
+        let image = opencv::core::Mat::new_rows_cols_with_default(
+            10, 10, opencv::core::CV_8UC4, opencv::core::Scalar::all(0.0),
+        ).unwrap();
         let result = engine.recognize(&image).await;
         if let Ok(regions) = result {
             assert!(regions.is_empty());
@@ -459,7 +499,9 @@ mod tests {
     async fn test_ocr_recognize_returns_text_regions() {
         let mut engine = PaddleOcrEngine::new();
         engine.init(&OcrConfig::default()).await.unwrap();
-        let image = image::DynamicImage::ImageRgb8(image::RgbImage::new(100, 50));
+        let image = opencv::core::Mat::new_rows_cols_with_default(
+            100, 50, opencv::core::CV_8UC4, opencv::core::Scalar::all(128.0),
+        ).unwrap();
         let result = engine.recognize(&image).await;
         assert!(result.is_ok());
     }
@@ -468,21 +510,16 @@ mod tests {
     async fn test_ocr_recognize_region_crops_correctly() {
         let mut engine = PaddleOcrEngine::new();
         engine.init(&OcrConfig::default()).await.unwrap();
-        let data = vec![128u8; 400 * 300 * 4];
-        let frame = CaptureFrame::new(
-            400,
-            300,
-            data,
-            betternte_core::PixelFormat::Rgba,
-            "test".into(),
-        );
+        let image = opencv::core::Mat::new_rows_cols_with_default(
+            300, 400, opencv::core::CV_8UC4, opencv::core::Scalar::all(128.0),
+        ).unwrap();
         let region = Region {
             x: 10,
             y: 10,
             width: 200,
             height: 100,
         };
-        let result = engine.recognize_region(&frame, &region).await;
+        let result = engine.recognize_region(&image, &region).await;
         assert!(result.is_ok());
     }
 
@@ -490,6 +527,9 @@ mod tests {
     async fn test_ocr_recognize_batch_matches_individual() {
         let mut engine = PaddleOcrEngine::new();
         engine.init(&OcrConfig::default()).await.unwrap();
+        let image = opencv::core::Mat::new_rows_cols_with_default(
+            200, 300, opencv::core::CV_8UC4, opencv::core::Scalar::all(128.0),
+        ).unwrap();
         let regions = vec![
             Region {
                 x: 0,
@@ -506,15 +546,7 @@ mod tests {
         ];
         let mut all_results = Vec::new();
         for region in &regions {
-            let data = vec![0u8; (region.width * region.height * 4) as usize];
-            let frame = CaptureFrame::new(
-                region.width,
-                region.height,
-                data,
-                betternte_core::PixelFormat::Rgba,
-                "test".into(),
-            );
-            if let Ok(texts) = engine.recognize_region(&frame, region).await {
+            if let Ok(texts) = engine.recognize_region(&image, region).await {
                 all_results.extend(texts);
             }
         }

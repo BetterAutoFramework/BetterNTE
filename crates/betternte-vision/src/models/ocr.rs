@@ -1,7 +1,12 @@
 //! PaddleOCR text recognition (DBNet detection + CRNN recognition).
+//!
+//! All preprocessing uses OpenCV `Mat` directly — no DynamicImage conversion.
 
 use crate::error::VisionError;
 use ndarray::{s, Array2, Array4, Axis};
+use opencv::core::{Mat, Rect, Size};
+use opencv::imgproc;
+use opencv::prelude::{MatTraitConst, MatTraitConstManual};
 use ort::session::Session;
 use std::path::Path;
 use std::sync::Mutex;
@@ -83,15 +88,19 @@ impl PaddleOcrEngine {
         self.rec_batch_size = rec_batch_size.max(1);
     }
 
-    pub fn recognize(&self, image: &image::DynamicImage) -> Result<Vec<OcrResult>, VisionError> {
-        let boxes = self.detect_text_regions(image)?;
+    /// Main entry point: recognize text in a BGRA Mat.
+    pub fn recognize(&self, image: &Mat) -> Result<Vec<OcrResult>, VisionError> {
+        // Convert BGRA → BGR once, used for all subsequent operations
+        let bgr = Self::ensure_bgr(image)?;
+
+        let boxes = self.detect_text_regions(&bgr)?;
         if boxes.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut results = Vec::new();
         for chunk in boxes.chunks(self.rec_batch_size) {
-            match self.recognize_regions_batch(image, chunk) {
+            match self.recognize_regions_batch(&bgr, chunk) {
                 Ok(mut part) => results.append(&mut part),
                 Err(err) => {
                     tracing::warn!(
@@ -99,7 +108,7 @@ impl PaddleOcrEngine {
                         regions = chunk.len(),
                         "OCR rec batch failed, falling back to per-region inference"
                     );
-                    let mut part = self.recognize_regions_sequential(image, chunk)?;
+                    let mut part = self.recognize_regions_sequential(&bgr, chunk)?;
                     results.append(&mut part);
                 }
             }
@@ -107,9 +116,34 @@ impl PaddleOcrEngine {
         Ok(results.into_iter().filter(|r| !r.text.is_empty()).collect())
     }
 
+    /// Convert input Mat to 3-channel BGR.
+    /// Handles BGRA→BGR and BGR passthrough.
+    fn ensure_bgr(image: &Mat) -> Result<Mat, VisionError> {
+        let channels = image.channels();
+        match channels {
+            4 => {
+                let mut bgr = Mat::default();
+                imgproc::cvt_color(image, &mut bgr, imgproc::COLOR_BGRA2BGR, 0)
+                    .map_err(|e| VisionError::InferenceError(format!("cvtColor BGRA→BGR: {}", e)))?;
+                Ok(bgr)
+            }
+            3 => Ok(image.clone()),
+            1 => {
+                let mut bgr = Mat::default();
+                imgproc::cvt_color(image, &mut bgr, imgproc::COLOR_GRAY2BGR, 0)
+                    .map_err(|e| VisionError::InferenceError(format!("cvtColor Gray→BGR: {}", e)))?;
+                Ok(bgr)
+            }
+            _ => Err(VisionError::InferenceError(format!(
+                "Unsupported Mat channels: {}",
+                channels
+            ))),
+        }
+    }
+
     fn recognize_regions_sequential(
         &self,
-        image: &image::DynamicImage,
+        image: &Mat,
         boxes: &[[(f32, f32); 4]],
     ) -> Result<Vec<OcrResult>, VisionError> {
         let mut results = Vec::new();
@@ -124,9 +158,16 @@ impl PaddleOcrEngine {
 
     fn detect_text_regions(
         &self,
-        image: &image::DynamicImage,
+        bgr: &Mat,
     ) -> Result<Vec<[(f32, f32); 4]>, VisionError> {
-        let input = self.preprocess_det(image, self.max_side_len);
+        let (orig_w, orig_h) = (bgr.cols() as u32, bgr.rows() as u32);
+        let (resized, _new_w, _new_h) = self.preprocess_det_resize(bgr)?;
+
+        let input = Self::mat_to_chw_f32_normalize(
+            &resized,
+            &[0.485f32, 0.456, 0.406],
+            &[0.229f32, 0.224, 0.225],
+        );
         let tensor = ort::value::Tensor::from_array(input)
             .map_err(|e| VisionError::InferenceError(format!("Det tensor: {}", e)))?;
 
@@ -163,8 +204,8 @@ impl PaddleOcrEngine {
             .map_err(|e| VisionError::InferenceError(format!("Reshape: {}", e)))?;
         let mut boxes = self.postprocess_det(&prob_map, self.det_threshold, self.unclip_ratio);
         if map_w > 0 && map_h > 0 {
-            let sx = image.width() as f32 / map_w as f32;
-            let sy = image.height() as f32 / map_h as f32;
+            let sx = orig_w as f32 / map_w as f32;
+            let sy = orig_h as f32 / map_h as f32;
             for b in &mut boxes {
                 for p in b.iter_mut() {
                     p.0 *= sx;
@@ -176,12 +217,67 @@ impl PaddleOcrEngine {
         Ok(boxes)
     }
 
+    /// Resize BGR Mat for detection (INTER_LINEAR, padded to 32px multiples).
+    fn preprocess_det_resize(&self, bgr: &Mat) -> Result<(Mat, u32, u32), VisionError> {
+        let orig_w = bgr.cols() as u32;
+        let orig_h = bgr.rows() as u32;
+        let ratio = if orig_w.max(orig_h) > self.max_side_len {
+            self.max_side_len as f32 / orig_w.max(orig_h) as f32
+        } else {
+            1.0
+        };
+        let new_w = ((orig_w as f32 * ratio / 32.0).ceil() * 32.0) as i32;
+        let new_h = ((orig_h as f32 * ratio / 32.0).ceil() * 32.0) as i32;
+
+        let mut resized = Mat::default();
+        imgproc::resize(
+            bgr,
+            &mut resized,
+            Size::new(new_w, new_h),
+            0.0,
+            0.0,
+            imgproc::INTER_LINEAR,
+        )
+        .map_err(|e| VisionError::InferenceError(format!("cv::resize: {}", e)))?;
+
+        Ok((resized, new_w as u32, new_h as u32))
+    }
+
+    /// Convert a BGR u8 Mat to CHW f32 ndarray with (pixel/255 - mean) / std normalization.
+    fn mat_to_chw_f32_normalize(bgr: &Mat, mean: &[f32; 3], std_val: &[f32; 3]) -> Array4<f32> {
+        let h = bgr.rows() as usize;
+        let w = bgr.cols() as usize;
+        let mut input = Array4::<f32>::zeros((1, 3, h, w));
+
+        // Get raw data — BGR interleaved u8
+        let data = match bgr.data_bytes() {
+            Ok(d) => d,
+            Err(_) => return input,
+        };
+        let step = bgr.step1(0).unwrap_or(w * 3); // row stride in bytes
+
+        for y in 0..h {
+            let row_off = y * step;
+            for x in 0..w {
+                let px_off = row_off + x * 3;
+                // BGR → RGB channel order for the CHW tensor
+                let b = data[px_off] as f32 / 255.0;
+                let g = data[px_off + 1] as f32 / 255.0;
+                let r = data[px_off + 2] as f32 / 255.0;
+                input[[0, 0, y, x]] = (r - mean[0]) / std_val[0]; // R
+                input[[0, 1, y, x]] = (g - mean[1]) / std_val[1]; // G
+                input[[0, 2, y, x]] = (b - mean[2]) / std_val[2]; // B
+            }
+        }
+        input
+    }
+
     fn recognize_regions_batch(
         &self,
-        image: &image::DynamicImage,
+        bgr: &Mat,
         boxes: &[[(f32, f32); 4]],
     ) -> Result<Vec<OcrResult>, VisionError> {
-        let (input, metas) = self.preprocess_rec_batch(image, boxes);
+        let (input, metas) = self.preprocess_rec_batch(bgr, boxes)?;
         if metas.is_empty() {
             return Ok(Vec::new());
         }
@@ -269,10 +365,10 @@ impl PaddleOcrEngine {
 
     fn recognize_region(
         &self,
-        image: &image::DynamicImage,
+        bgr: &Mat,
         bbox: &[(f32, f32); 4],
     ) -> Result<OcrResult, VisionError> {
-        let Some((x_min, y_min, w, h)) = Self::clamped_rect(image, bbox) else {
+        let Some(rect) = Self::clamped_mat_rect(bgr, bbox) else {
             return Ok(OcrResult {
                 text: String::new(),
                 confidence: 0.0,
@@ -280,8 +376,13 @@ impl PaddleOcrEngine {
             });
         };
 
-        let cropped = image.crop_imm(x_min, y_min, w, h);
-        let input = self.preprocess_rec(&cropped);
+        // Zero-copy ROI crop (try_clone is O(1), only copies the Mat header)
+        let roi = Mat::roi(bgr, rect)
+            .map_err(|e| VisionError::InferenceError(format!("Mat roi: {}", e)))?
+            .try_clone()
+            .map_err(|e| VisionError::InferenceError(format!("Mat roi clone: {}", e)))?;
+
+        let input = self.preprocess_rec(&roi)?;
         let tensor = ort::value::Tensor::from_array(input)
             .map_err(|e| VisionError::InferenceError(format!("Rec tensor: {}", e)))?;
 
@@ -311,75 +412,49 @@ impl PaddleOcrEngine {
         })
     }
 
-    fn preprocess_det(&self, image: &image::DynamicImage, limit_side_len: u32) -> Array4<f32> {
-        let (orig_w, orig_h) = (image.width(), image.height());
-        let ratio = if orig_w.max(orig_h) > limit_side_len {
-            limit_side_len as f32 / orig_w.max(orig_h) as f32
-        } else {
-            1.0
-        };
-        let new_w = ((orig_w as f32 * ratio / 32.0).ceil() * 32.0) as u32;
-        let new_h = ((orig_h as f32 * ratio / 32.0).ceil() * 32.0) as u32;
+    /// Preprocess a BGR Mat ROI for recognition: resize to 320×48, normalize.
+    fn preprocess_rec(&self, roi: &Mat) -> Result<Array4<f32>, VisionError> {
+        let mut resized = Mat::default();
+        imgproc::resize(
+            roi,
+            &mut resized,
+            Size::new(320, 48),
+            0.0,
+            0.0,
+            imgproc::INTER_LINEAR,
+        )
+        .map_err(|e| VisionError::InferenceError(format!("cv::resize rec: {}", e)))?;
 
-        let resized = image.resize_exact(new_w, new_h, image::imageops::FilterType::Lanczos3);
-        let rgb = resized.to_rgb8();
-        let (w, h) = rgb.dimensions();
-
-        let mean = [0.485f32, 0.456, 0.406];
-        let std_val = [0.229f32, 0.224, 0.225];
-        let mut input = Array4::<f32>::zeros((1, 3, h as usize, w as usize));
-        for y in 0..h {
-            for x in 0..w {
-                let pixel = rgb.get_pixel(x, y);
-                for c in 0..3 {
-                    input[[0, c, y as usize, x as usize]] =
-                        (pixel[c] as f32 / 255.0 - mean[c]) / std_val[c];
-                }
-            }
-        }
-        input
-    }
-
-    fn preprocess_rec(&self, image: &image::DynamicImage) -> Array4<f32> {
-        let resized = image.resize_exact(320, 48, image::imageops::FilterType::Lanczos3);
-        let rgb = resized.to_rgb8();
-        let (w, h) = rgb.dimensions();
-
-        let mean = [0.5f32, 0.5, 0.5];
-        let std_val = [0.5f32, 0.5, 0.5];
-        let mut input = Array4::<f32>::zeros((1, 3, h as usize, w as usize));
-        for y in 0..h {
-            for x in 0..w {
-                let pixel = rgb.get_pixel(x, y);
-                for c in 0..3 {
-                    input[[0, c, y as usize, x as usize]] =
-                        (pixel[c] as f32 / 255.0 - mean[c]) / std_val[c];
-                }
-            }
-        }
-        input
+        Ok(Self::mat_to_chw_f32_normalize(
+            &resized,
+            &[0.5f32, 0.5, 0.5],
+            &[0.5f32, 0.5, 0.5],
+        ))
     }
 
     fn preprocess_rec_batch(
         &self,
-        image: &image::DynamicImage,
+        bgr: &Mat,
         boxes: &[[(f32, f32); 4]],
-    ) -> (Array4<f32>, Vec<RecCropMeta>) {
+    ) -> Result<(Array4<f32>, Vec<RecCropMeta>), VisionError> {
         let mut samples = Vec::new();
         let mut metas = Vec::new();
 
         for bbox in boxes {
-            let Some((x, y, w, h)) = Self::clamped_rect(image, bbox) else {
+            let Some(rect) = Self::clamped_mat_rect(bgr, bbox) else {
                 continue;
             };
-            let cropped = image.crop_imm(x, y, w, h);
-            let sample = self.preprocess_rec(&cropped);
+            let roi = Mat::roi(bgr, rect)
+                .map_err(|e| VisionError::InferenceError(format!("Mat roi: {}", e)))?;
+            let roi_mat: Mat = roi.try_clone()
+                .map_err(|e| VisionError::InferenceError(format!("Mat roi clone: {}", e)))?;
+            let sample = self.preprocess_rec(&roi_mat)?;
             samples.push(sample);
             metas.push(RecCropMeta { bbox: *bbox });
         }
 
         if samples.is_empty() {
-            return (Array4::<f32>::zeros((0, 3, 48, 320)), metas);
+            return Ok((Array4::<f32>::zeros((0, 3, 48, 320)), metas));
         }
 
         let n = samples.len();
@@ -388,13 +463,11 @@ impl PaddleOcrEngine {
             let view = sample.index_axis(Axis(0), 0);
             batch.slice_mut(s![i, .., .., ..]).assign(&view);
         }
-        (batch, metas)
+        Ok((batch, metas))
     }
 
-    fn clamped_rect(
-        image: &image::DynamicImage,
-        bbox: &[(f32, f32); 4],
-    ) -> Option<(u32, u32, u32, u32)> {
+    /// Compute clamped Rect for bbox within a Mat.
+    fn clamped_mat_rect(mat: &Mat, bbox: &[(f32, f32); 4]) -> Option<Rect> {
         let min_x = bbox.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
         let min_y = bbox.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
         let max_x = bbox.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max);
@@ -403,16 +476,16 @@ impl PaddleOcrEngine {
             return None;
         }
 
-        let iw = image.width() as f32;
-        let ih = image.height() as f32;
-        let x0 = min_x.floor().clamp(0.0, iw) as u32;
-        let y0 = min_y.floor().clamp(0.0, ih) as u32;
-        let x1 = max_x.ceil().clamp(0.0, iw) as u32;
-        let y1 = max_y.ceil().clamp(0.0, ih) as u32;
+        let mw = mat.cols() as f32;
+        let mh = mat.rows() as f32;
+        let x0 = min_x.floor().clamp(0.0, mw) as i32;
+        let y0 = min_y.floor().clamp(0.0, mh) as i32;
+        let x1 = max_x.ceil().clamp(0.0, mw) as i32;
+        let y1 = max_y.ceil().clamp(0.0, mh) as i32;
         if x1 <= x0 || y1 <= y0 {
             return None;
         }
-        Some((x0, y0, x1 - x0, y1 - y0))
+        Some(Rect::new(x0, y0, x1 - x0, y1 - y0))
     }
 
     fn postprocess_det(
@@ -602,5 +675,33 @@ mod tests {
         assert!(expanded[0].1 < 10.0);
         assert!(expanded[2].0 > 20.0);
         assert!(expanded[2].1 > 20.0);
+    }
+
+    #[test]
+    fn test_ensure_bgr_passthrough() {
+        // A 3-channel BGR Mat should pass through unchanged
+        let bgr = Mat::new_rows_cols_with_default(2, 3, opencv::core::CV_8UC3, opencv::core::Scalar::all(128.0)).unwrap();
+        let result = PaddleOcrEngine::ensure_bgr(&bgr).unwrap();
+        assert_eq!(result.channels(), 3);
+    }
+
+    #[test]
+    fn test_ensure_bgr_from_bgra() {
+        let bgra = Mat::new_rows_cols_with_default(2, 3, opencv::core::CV_8UC4, opencv::core::Scalar::all(128.0)).unwrap();
+        let result = PaddleOcrEngine::ensure_bgr(&bgra).unwrap();
+        assert_eq!(result.channels(), 3);
+        assert_eq!(result.rows(), 2);
+        assert_eq!(result.cols(), 3);
+    }
+
+    #[test]
+    fn test_clamped_mat_rect_basic() {
+        let mat = Mat::new_rows_cols_with_default(100, 200, opencv::core::CV_8UC3, opencv::core::Scalar::default()).unwrap();
+        let bbox = [(10.0, 20.0), (100.0, 20.0), (100.0, 80.0), (10.0, 80.0)];
+        let rect = PaddleOcrEngine::clamped_mat_rect(&mat, &bbox).unwrap();
+        assert_eq!(rect.x, 10);
+        assert_eq!(rect.y, 20);
+        assert_eq!(rect.width, 90);
+        assert_eq!(rect.height, 60);
     }
 }
