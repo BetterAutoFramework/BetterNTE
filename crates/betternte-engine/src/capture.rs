@@ -809,31 +809,20 @@ impl Engine {
         }
     }
 
-    /// Background capture loop: captures frames and ticks all enabled triggers.
+    /// Background capture loop: captures frames and pushes to frame pool.
+    ///
+    /// This loop runs at the configured fps_cap and never blocks on trigger execution.
+    /// Triggers consume frames independently from the pool.
     pub(super) async fn capture_loop(
         fps_cap: u32,
         hwnd: Option<u64>,
-        runtime: Option<std::sync::Arc<betternte_script::ScriptRuntime>>,
-        ctx: Option<std::sync::Arc<super::script_ctx::EngineScriptContext>>,
         capture_config: betternte_core::config::CaptureConfig,
         mut stop_rx: tokio::sync::oneshot::Receiver<()>,
         replay_session: Option<std::sync::Arc<crate::replay_recorder::ReplaySessionInner>>,
         replay_artifact_frames: Option<Vec<std::path::PathBuf>>,
+        frame_pool: betternte_capture::FramePool,
     ) {
-        let runtime = match runtime {
-            Some(r) => r,
-            None => return,
-        };
-        let ctx = match ctx {
-            Some(c) => c,
-            None => return,
-        };
-        if let Some(hwnd) = hwnd {
-            ctx.set_hwnd(hwnd);
-        }
-
         let frame_interval = tokio::time::Duration::from_millis(1000 / fps_cap as u64);
-        let ctx_trait: std::sync::Arc<dyn betternte_script::ScriptContext> = ctx.clone();
         let is_replay_artifact = replay_artifact_frames.is_some();
         info!(
             fps_cap,
@@ -954,23 +943,24 @@ impl Engine {
                                 }
                             }
                             let now = std::time::Instant::now();
-                            Self::tick_capture_frame_after_acquire(
-                                &mut frame,
-                                if is_replay_artifact { None } else { Some("engine_loop") },
-                                now,
-                                fps_cap,
-                                &mut last_capture_at,
-                                &mut smoothed_fps,
-                                &ctx,
-                                &runtime,
-                                &ctx_trait,
-                                if is_replay_artifact {
-                                    "Trigger tick error (replay-artifact)"
-                                } else {
-                                    "Trigger tick error"
-                                },
-                            )
-                            .await;
+                            // Tag the frame source
+                            if !is_replay_artifact {
+                                frame.source = "engine_loop".to_string();
+                            }
+                            // Push frame to pool — triggers consume independently
+                            frame_pool.push(frame);
+                            // Track FPS
+                            if let Some(prev) = last_capture_at {
+                                let dt = now.duration_since(prev).as_secs_f64();
+                                if dt > 0.0 {
+                                    let instant_fps = 1.0 / dt;
+                                    smoothed_fps = Some(match smoothed_fps {
+                                        Some(prev) => prev * 0.8 + instant_fps * 0.2,
+                                        None => instant_fps,
+                                    });
+                                }
+                            }
+                            last_capture_at = Some(now);
                         }
                         Err(e) => {
                             warn!(error = %e, "Capture failed in trigger loop");

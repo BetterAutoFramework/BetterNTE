@@ -20,11 +20,11 @@ pub struct ScriptRuntime {
     active_cancel: RwLock<Option<crate::engine::CancellationToken>>,
 }
 
-struct LoadedScript {
-    info: ScriptInfo,
-    script: Box<dyn Script>,
-    enabled: bool,
-    last_enable_params: Option<serde_json::Value>,
+pub struct LoadedScript {
+    pub info: ScriptInfo,
+    pub script: Box<dyn Script>,
+    pub enabled: bool,
+    pub last_enable_params: Option<serde_json::Value>,
 }
 
 /// Resolve a runtime script key: [`ScriptInfo::script_id`] or unique `manifest.name`.
@@ -69,6 +69,11 @@ impl ScriptRuntime {
         engine: Box<dyn crate::engine::ScriptEngine>,
     ) {
         self.loader.register_engine(extension, engine);
+    }
+
+    /// Access the scripts map (for trigger enumeration in spawn_trigger_consumers).
+    pub fn scripts(&self) -> &RwLock<HashMap<String, LoadedScript>> {
+        &self.scripts
     }
 
     pub async fn load_all(&self) -> Result<Vec<ScriptInfo>> {
@@ -518,6 +523,39 @@ impl ScriptRuntime {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    /// Tick a single named trigger (for decoupled frame pool architecture).
+    ///
+    /// Each trigger runs in its own tokio task and calls this method independently.
+    /// The script entry is temporarily removed from the map during execution to
+    /// avoid holding the lock across the async `on_capture` call.
+    pub async fn tick_single_trigger(
+        &self,
+        ctx: &Arc<dyn ScriptContext>,
+        frame: &CaptureFrame,
+        name: &str,
+    ) -> Result<()> {
+        let entry = {
+            let mut scripts = self.scripts.write().await;
+            match scripts.remove(name) {
+                Some(entry) => entry,
+                None => return Ok(()), // trigger was removed
+            }
+        };
+
+        let mut entry = entry;
+        let result = entry.script.on_capture(ctx, frame).await;
+
+        let mut scripts = self.scripts.write().await;
+        if let Err(e) = result {
+            error!("Trigger '{}' error: {}", name, e);
+            entry.enabled = false;
+            warn!("Auto-disabled trigger '{}' due to error", name);
+        }
+        scripts.insert(name.to_string(), entry);
 
         Ok(())
     }

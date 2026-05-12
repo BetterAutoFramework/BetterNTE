@@ -226,6 +226,8 @@ impl EngineBuilder {
             custom_step_handlers: Arc::new(custom_step_handlers),
             custom_input_runner,
             overlay_manager: std::sync::Mutex::new(None),
+            frame_pool: None,
+            trigger_joins: Vec::new(),
         };
 
         engine.ensure_local_subscription();

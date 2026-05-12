@@ -32,4 +32,4 @@ pub use manifest::{EngineVersionReq, Manifest, ScriptDependency};
 pub use manifest_permissions::manifest_permission_key_for_ctx_method;
 pub use plugin::{PluginInfo, PluginRegistry, PluginStorage};
 pub use quickjs::QuickJsEngine;
-pub use runtime::ScriptRuntime;
+pub use runtime::{LoadedScript, ScriptRuntime};

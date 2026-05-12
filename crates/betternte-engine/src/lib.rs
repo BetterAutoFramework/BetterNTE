@@ -85,6 +85,9 @@ pub struct Engine {
     pub(crate) custom_step_handlers: Arc<Vec<Arc<dyn betternte_runtime::StepHandler>>>,
     pub(crate) custom_input_runner: Option<Arc<dyn betternte_runtime::InputRunner>>,
     pub(crate) overlay_manager: std::sync::Mutex<Option<betternte_overlay::OverlayManager>>,
+    // Frame pool — decoupled capture ↔ consumption
+    pub(crate) frame_pool: Option<betternte_capture::FramePool>,
+    pub(crate) trigger_joins: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// 任务组/工作流执行状态。
@@ -214,26 +217,96 @@ impl Engine {
             ctx.set_replay_timeline_sink(replay_session.clone()).await;
         }
 
+        // Create frame pool — capture pushes, triggers consume independently
+        let frame_pool = betternte_capture::FramePool::new();
+
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
         self.capture_stop = Some(stop_tx);
+        let pool_for_capture = frame_pool.clone();
         let join = tokio::spawn(async move {
             Self::capture_loop(
                 fps_cap,
                 hwnd,
-                runtime,
-                ctx,
                 capture_config,
                 stop_rx,
                 replay_session,
                 replay_artifact_frames,
+                pool_for_capture,
             )
             .await;
         });
         self.capture_join = Some(join);
 
+        // Spawn trigger consumer tasks — each trigger reads from the pool independently
+        self.spawn_trigger_consumers(frame_pool.clone()).await;
+
+        self.frame_pool = Some(frame_pool);
+
         self.state = EngineState::Running;
-        info!("Engine started (fps_cap={})", fps_cap);
+        info!("Engine started (fps_cap={}, decoupled frame pool)", fps_cap);
         Ok(())
+    }
+
+    /// Spawn one tokio task per enabled trigger. Each task reads frames from
+    /// the pool and runs its trigger independently — no trigger blocks another.
+    async fn spawn_trigger_consumers(&mut self, pool: betternte_capture::FramePool) {
+        let runtime = match self.runtime.clone() {
+            Some(r) => r,
+            None => return,
+        };
+        let ctx = match self.script_ctx.clone() {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Collect enabled trigger names
+        let trigger_names: Vec<String> = {
+            let scripts = runtime.scripts().read().await;
+            scripts
+                .iter()
+                .filter(|(_, s)| s.enabled && s.info.manifest.script_type == betternte_script::ScriptType::Trigger)
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+
+        if trigger_names.is_empty() {
+            info!("No enabled triggers to spawn");
+            return;
+        }
+
+        let ctx_trait: std::sync::Arc<dyn betternte_script::ScriptContext> = ctx.clone();
+
+        for name in trigger_names {
+            let pool_clone = pool.clone();
+            let runtime_clone = runtime.clone();
+            let ctx_trait_clone = ctx_trait.clone();
+            let ctx_clone = ctx.clone();
+
+            let join = tokio::spawn(async move {
+                info!(trigger = %name, "Trigger consumer started");
+                loop {
+                    // Wait for the next frame — skips stale frames automatically
+                    let frame = pool_clone.wait_latest().await;
+
+                    let script_frame = betternte_script::CaptureFrame {
+                        width: frame.width,
+                        height: frame.height,
+                        data: std::sync::Arc::clone(&frame.data),
+                    };
+
+                    // Update shared frame for this trigger's vision operations
+                    ctx_clone.update_shared_frame(frame, 0.0).await;
+
+                    // Tick this single trigger
+                    if let Err(e) = runtime_clone.tick_single_trigger(&ctx_trait_clone, &script_frame, &name).await {
+                        tracing::warn!(trigger = %name, error = %e, "Trigger tick error");
+                    }
+                }
+            });
+            self.trigger_joins.push(join);
+        }
+
+        info!(count = self.trigger_joins.len(), "Trigger consumer tasks spawned");
     }
 
     /// 停止引擎，释放运行时资源。
@@ -250,6 +323,14 @@ impl Engine {
         if let Some(join) = self.capture_join.take() {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(3), join).await;
         }
+
+        // Stop trigger consumer tasks
+        for join in self.trigger_joins.drain(..) {
+            join.abort();
+        }
+
+        // Clear frame pool
+        self.frame_pool = None;
 
         // Stop any running task
         if let (Some(ref runtime), Some(ctx)) = (&self.runtime, self.script_context()) {

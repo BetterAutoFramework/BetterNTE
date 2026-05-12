@@ -31,6 +31,7 @@ pub mod buffer;
 pub mod dxgi_dup;
 pub mod error;
 pub mod factory;
+pub mod frame_pool;
 pub mod print_window;
 pub mod screen_dc;
 pub mod wgc;
@@ -40,6 +41,7 @@ pub mod window;
 // Re-exports
 pub use bitblt::BitBltCapture;
 pub use buffer::FrameRingBuffer;
+pub use frame_pool::FramePool;
 pub use dxgi_dup::DxgiDupCapture;
 pub use error::{CaptureError, Result};
 pub use factory::{
