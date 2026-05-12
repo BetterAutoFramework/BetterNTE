@@ -116,7 +116,7 @@ pub struct EngineScriptContext {
 
     // Capture frame cache
     frame_cache: tokio::sync::Mutex<Option<CoreCaptureFrame>>,
-    mat_frame_cache: tokio::sync::Mutex<HashMap<(u32, u32), MatFrameCache>>,
+    mat_frame_cache: tokio::sync::Mutex<Option<MatFrameCache>>,
     ocr_batch_cache: tokio::sync::Mutex<Option<OcrBatchCacheSnapshot>>,
     frame_number: AtomicU64,
 
@@ -228,7 +228,7 @@ impl EngineScriptContext {
             color_detector: None,
             ocr_engine: None,
             frame_cache: tokio::sync::Mutex::new(None),
-            mat_frame_cache: tokio::sync::Mutex::new(HashMap::new()),
+            mat_frame_cache: tokio::sync::Mutex::new(None),
             ocr_batch_cache: tokio::sync::Mutex::new(None),
             frame_number: AtomicU64::new(0),
             fps: AtomicU32::new(0),
@@ -393,8 +393,13 @@ impl EngineScriptContext {
         self.template_file_cache.clear();
     }
 
-    /// Get current scale factors by comparing design resolution to latest frame size.
-    /// Returns `(scale_x, scale_y)` or `None` if no scaling configured or no frame available.
+    /// Get scale factors from design resolution to native frame size.
+    /// Returns `(scale_x, scale_y)` or `None` if no scaling configured, no frame available,
+    /// or design resolution matches native resolution.
+    ///
+    /// NOTE: With "scale templates, not frames" approach, these are used for scaling
+    /// coordinates from design→native in input functions and for scaling templates/ROIs
+    /// in vision functions.
     fn current_scale_factors(&self) -> Option<(f64, f64)> {
         let design: Option<(u32, u32)> = *self.design_resolution.lock().unwrap();
         let design = design?;
@@ -408,7 +413,7 @@ impl EngineScriptContext {
         Some((sx, sy))
     }
 
-    /// Reverse-scale a point from design resolution to actual screen coordinates.
+    /// Scale a point from design resolution to native screen coordinates.
     fn reverse_scale_point(&self, x: i32, y: i32) -> (i32, i32) {
         if let Some((sx, sy)) = self.current_scale_factors() {
             ((x as f64 * sx).round() as i32, (y as f64 * sy).round() as i32)
@@ -417,7 +422,7 @@ impl EngineScriptContext {
         }
     }
 
-    /// Reverse-scale a region from design resolution to actual screen coordinates.
+    /// Scale a region from design resolution to native screen coordinates.
     fn reverse_scale_region(&self, r: &Region) -> Region {
         if let Some((sx, sy)) = self.current_scale_factors() {
             Region {
@@ -759,13 +764,10 @@ impl EngineScriptContext {
         let frame = self.get_cached_core_frame().await?;
         let key = Self::frame_key(&frame);
 
-        let design: Option<(u32, u32)> = *self.design_resolution.lock().unwrap();
-        let (target_w, target_h) = design.unwrap_or((frame.width, frame.height));
-
-        // Check mat cache
+        // Check mat cache — always native resolution now (no design-res resize)
         {
             let cache = self.mat_frame_cache.lock().await;
-            if let Some(snap) = cache.get(&(target_w, target_h)) {
+            if let Some(snap) = cache.as_ref() {
                 if snap.source_key == key {
                     return Ok((frame, snap.mat.clone()));
                 }
@@ -776,19 +778,6 @@ impl EngineScriptContext {
         let started = Instant::now();
         let mat = Self::frame_to_mat(&frame)?;
 
-        // Resize if capture resolution != design resolution
-        let mat = if target_w != frame.width || target_h != frame.height {
-            use opencv::core::Size;
-            use opencv::imgproc;
-            let mut resized = opencv::core::Mat::default();
-            let size = Size::new(target_w as i32, target_h as i32);
-            imgproc::resize(&mat, &mut resized, size, 0.0, 0.0, imgproc::INTER_NEAREST)
-                .map_err(|e| anyhow::anyhow!("cv::resize error: {}", e))?;
-            resized
-        } else {
-            mat
-        };
-
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         if perf_enabled() {
             let mode = perf_mode();
@@ -797,19 +786,16 @@ impl EngineScriptContext {
                     target: "betternte_perf",
                     event = "decode_mat",
                     frame_key = key,
-                    target_w = target_w,
-                    target_h = target_h,
+                    frame_w = frame.width,
+                    frame_h = frame.height,
                     ms = elapsed_ms,
                     "decode_mat"
                 );
             }
         }
 
-        // Store in cache
-        self.mat_frame_cache.lock().await.insert(
-            (target_w, target_h),
-            MatFrameCache { source_key: key, mat: mat.clone() },
-        );
+        // Store in cache (native resolution, no resize)
+        *self.mat_frame_cache.lock().await = Some(MatFrameCache { source_key: key, mat: mat.clone() });
 
         Ok((frame, mat))
     }
@@ -943,8 +929,54 @@ impl EngineScriptContext {
             .load(&template_path)
             .map_err(|e| anyhow::anyhow!("Failed to load template '{}': {}", name, e))?;
 
+        // Scale template from design resolution to native frame size.
+        // Templates are small (100-200px), so resizing is <0.1ms — negligible compared
+        // to the ~0.5-1ms saved by not resizing every frame.
+        let template_img = if let Some((design_w, design_h)) = *self.design_resolution.lock().unwrap() {
+            if design_w != frame_w || design_h != frame_h {
+                let scale_x = frame_w as f64 / design_w as f64;
+                let scale_y = frame_h as f64 / design_h as f64;
+                let new_w = (template_img.width() as f64 * scale_x).round() as u32;
+                let new_h = (template_img.height() as f64 * scale_y).round() as u32;
+                template_img.resize_exact(new_w, new_h, image::imageops::FilterType::Nearest)
+            } else {
+                template_img
+            }
+        } else {
+            template_img
+        };
+
+        // Scale ROI from design resolution to native frame coordinates
+        let native_roi: Option<Region> = opts.and_then(|o| o.roi.as_ref()).map(|roi| {
+            if let Some((design_w, design_h)) = *self.design_resolution.lock().unwrap() {
+                if design_w != frame_w || design_h != frame_h {
+                    let sx = frame_w as f64 / design_w as f64;
+                    let sy = frame_h as f64 / design_h as f64;
+                    Region {
+                        x: (roi.x as f64 * sx).round() as i32,
+                        y: (roi.y as f64 * sy).round() as i32,
+                        width: (roi.width as f64 * sx).round() as u32,
+                        height: (roi.height as f64 * sy).round() as u32,
+                    }
+                } else {
+                    roi.clone()
+                }
+            } else {
+                roi.clone()
+            }
+        });
+
+        // Compute scale factors for reverse-scaling match results back to design space
+        let inv_scale = self.design_resolution.lock().unwrap().and_then(|(dw, dh)| {
+            if dw != frame_w || dh != frame_h {
+                Some((dw as f64 / frame_w as f64, dh as f64 / frame_h as f64))
+            } else {
+                None
+            }
+        });
+
         let (search_mat, roi_offset_x, roi_offset_y): (opencv::core::Mat, i32, i32) =
-            if let Some(roi) = opts.and_then(|o| o.roi.as_ref()) {
+            if let Some(ref roi) = native_roi {
                 let x = roi.x.max(0) as i32;
                 let y = roi.y.max(0) as i32;
                 let w = (roi.width as i32).min(frame_w as i32 - x);
@@ -982,12 +1014,27 @@ impl EngineScriptContext {
         };
         let mut mapped: Vec<MatchResult> = results
             .into_iter()
-            .map(|r| MatchResult {
-                x: r.position.x + roi_offset_x,
-                y: r.position.y + roi_offset_y,
-                width: r.width,
-                height: r.height,
-                confidence: r.score as f64,
+            .map(|r| {
+                let native_x = r.position.x + roi_offset_x;
+                let native_y = r.position.y + roi_offset_y;
+                // Reverse-scale from native back to design resolution for script compatibility
+                if let Some((sx, sy)) = inv_scale {
+                    MatchResult {
+                        x: (native_x as f64 * sx).round() as i32,
+                        y: (native_y as f64 * sy).round() as i32,
+                        width: (r.width as f64 * sx).round() as u32,
+                        height: (r.height as f64 * sy).round() as u32,
+                        confidence: r.score as f64,
+                    }
+                } else {
+                    MatchResult {
+                        x: native_x,
+                        y: native_y,
+                        width: r.width,
+                        height: r.height,
+                        confidence: r.score as f64,
+                    }
+                }
             })
             .collect();
 
@@ -1523,6 +1570,9 @@ impl ScriptContext for EngineScriptContext {
     async fn ocr(&self, region: &Region, text_color: Option<&str>, text_color_tolerance: u8) -> Result<String> {
         let (frame, mut mat) = self.get_decoded_mat_for_vision().await?;
 
+        // Scale region from design resolution to native frame coordinates
+        let native_region = self.reverse_scale_region(region);
+
         if let Some(color_str) = text_color {
             if let Some(target) = parse_color_str(color_str) {
                 mat = apply_text_color_filter(&mat, target, text_color_tolerance);
@@ -1558,9 +1608,9 @@ impl ScriptContext for EngineScriptContext {
                         .filter(|r| {
                             let rx2 = r.region.x + r.region.width as i32;
                             let ry2 = r.region.y + r.region.height as i32;
-                            let qx2 = region.x + region.width as i32;
-                            let qy2 = region.y + region.height as i32;
-                            r.region.x < qx2 && rx2 > region.x && r.region.y < qy2 && ry2 > region.y
+                            let qx2 = native_region.x + native_region.width as i32;
+                            let qy2 = native_region.y + native_region.height as i32;
+                            r.region.x < qx2 && rx2 > native_region.x && r.region.y < qy2 && ry2 > native_region.y
                         })
                         .map(|r| r.text.as_str())
                         .collect::<Vec<_>>()
@@ -1578,7 +1628,7 @@ impl ScriptContext for EngineScriptContext {
             })?;
         }
 
-        let eligible = Self::ocr_batch_eligible(region, vision_w, vision_h);
+        let eligible = Self::ocr_batch_eligible(&native_region, vision_w, vision_h);
         if eligible {
             let started = Instant::now();
             match engine.recognize(&mat).await {
@@ -1611,9 +1661,9 @@ impl ScriptContext for EngineScriptContext {
                         .filter(|r| {
                             let rx2 = r.region.x + r.region.width as i32;
                             let ry2 = r.region.y + r.region.height as i32;
-                            let qx2 = region.x + region.width as i32;
-                            let qy2 = region.y + region.height as i32;
-                            r.region.x < qx2 && rx2 > region.x && r.region.y < qy2 && ry2 > region.y
+                            let qx2 = native_region.x + native_region.width as i32;
+                            let qy2 = native_region.y + native_region.height as i32;
+                            r.region.x < qx2 && rx2 > native_region.x && r.region.y < qy2 && ry2 > native_region.y
                         })
                         .map(|r| r.text.as_str())
                         .collect::<Vec<_>>()
@@ -1648,11 +1698,11 @@ impl ScriptContext for EngineScriptContext {
             );
         }
 
-        // Non-batch fallback: crop the scaled frame by region and run OCR on it.
-        let x = region.x.max(0);
-        let y = region.y.max(0);
-        let w = (region.width as i32).min((vision_w as i32).saturating_sub(x));
-        let h = (region.height as i32).min((vision_h as i32).saturating_sub(y));
+        // Non-batch fallback: crop the native frame by scaled region and run OCR on it.
+        let x = native_region.x.max(0);
+        let y = native_region.y.max(0);
+        let w = (native_region.width as i32).min((vision_w as i32).saturating_sub(x));
+        let h = (native_region.height as i32).min((vision_h as i32).saturating_sub(y));
         if w <= 0 || h <= 0 {
             return Ok(String::new());
         }
@@ -1692,15 +1742,32 @@ impl ScriptContext for EngineScriptContext {
 
         match engine.recognize(&mat).await {
             Ok(regions) => {
+                // OCR runs on the native-resolution Mat, so bbox is in native coords.
+                // Reverse-scale back to design resolution so scripts see consistent coords.
+                let inv = self.design_resolution.lock().unwrap().map(|(dw, dh)| {
+                    (dw as f64 / mat.cols() as f64, dh as f64 / mat.rows() as f64)
+                });
+                let unscale_x = |v: i32| -> i32 {
+                    if let Some((sx, _)) = inv { (v as f64 * sx).round() as i32 } else { v }
+                };
+                let unscale_y = |v: i32| -> i32 {
+                    if let Some((_, sy)) = inv { (v as f64 * sy).round() as i32 } else { v }
+                };
+                let unscale_w = |v: u32| -> u32 {
+                    if let Some((sx, _)) = inv { (v as f64 * sx).round() as u32 } else { v }
+                };
+                let unscale_h = |v: u32| -> u32 {
+                    if let Some((_, sy)) = inv { (v as f64 * sy).round() as u32 } else { v }
+                };
                 let mapped: Vec<OcrResult> = regions
                     .into_iter()
                     .map(|r| OcrResult {
                         text: r.text,
                         region: Region {
-                            x: r.bbox.x as i32,
-                            y: r.bbox.y as i32,
-                            width: r.bbox.width as u32,
-                            height: r.bbox.height as u32,
+                            x: unscale_x(r.bbox.x as i32),
+                            y: unscale_y(r.bbox.y as i32),
+                            width: unscale_w(r.bbox.width as u32),
+                            height: unscale_h(r.bbox.height as u32),
                         },
                         confidence: r.confidence as f64,
                     })
@@ -1789,9 +1856,12 @@ impl ScriptContext for EngineScriptContext {
 
         let (_, mat) = self.get_decoded_mat_for_vision().await?;
 
+        // Scale coordinates from design resolution to native frame size
+        let (sx, sy) = self.reverse_scale_point(x, y);
+
         Ok(detector.detect_pixel(
             &mat,
-            Point { x, y },
+            Point { x: sx, y: sy },
             target,
             ColorTolerance::from(tolerance),
         ))
@@ -1830,6 +1900,21 @@ impl ScriptContext for EngineScriptContext {
 
         let (_, mat) = self.get_decoded_mat_for_vision().await?;
 
+        // Scale points from design resolution to native frame coordinates
+        let scaled_points: Vec<ColorMatchPoint> = points
+            .iter()
+            .map(|p| {
+                let (sx, sy) = self.reverse_scale_point(p.x, p.y);
+                ColorMatchPoint {
+                    x: sx,
+                    y: sy,
+                    color: p.color.clone(),
+                    tolerance: p.tolerance,
+                    rgba_tolerance: p.rgba_tolerance,
+                }
+            })
+            .collect();
+
         let mut offsets: Vec<(i32, i32)> = vec![(0, 0)];
         if let Some((mx, my)) = shift_max {
             let (mx, my) = clamp_color_match_shift(mx, my);
@@ -1848,7 +1933,7 @@ impl ScriptContext for EngineScriptContext {
             let (pass, rows) = color_match_eval_offset(
                 detector,
                 &mat,
-                points,
+                &scaled_points,
                 &point_tolerances,
                 ox,
                 oy,
@@ -1864,7 +1949,7 @@ impl ScriptContext for EngineScriptContext {
         }
 
         let baseline = if debug {
-            color_match_eval_offset(detector, &mat, points, &point_tolerances, 0, 0, true).1
+            color_match_eval_offset(detector, &mat, &scaled_points, &point_tolerances, 0, 0, true).1
         } else {
             vec![]
         };
@@ -1941,10 +2026,13 @@ impl ScriptContext for EngineScriptContext {
         let (_, mat) = self.get_decoded_mat_for_vision().await?;
         let iw = mat.cols() as u32;
         let ih = mat.rows() as u32;
-        let x0 = region.x.max(0).min(iw.saturating_sub(1) as i32);
-        let y0 = region.y.max(0).min(ih.saturating_sub(1) as i32);
-        let x1 = (region.x + region.width as i32).min(iw as i32).max(x0 + 1);
-        let y1 = (region.y + region.height as i32).min(ih as i32).max(y0 + 1);
+
+        // Scale region from design resolution to native frame coordinates
+        let native_region = self.reverse_scale_region(&region);
+        let x0 = native_region.x.max(0).min(iw.saturating_sub(1) as i32);
+        let y0 = native_region.y.max(0).min(ih.saturating_sub(1) as i32);
+        let x1 = (native_region.x + native_region.width as i32).min(iw as i32).max(x0 + 1);
+        let y1 = (native_region.y + native_region.height as i32).min(ih as i32).max(y0 + 1);
         let rw = (x1 - x0).max(1) as u32;
         let rh = (y1 - y0).max(1) as u32;
         let rect = opencv::core::Rect::new(x0, y0, rw as i32, rh as i32);
@@ -1984,10 +2072,15 @@ impl ScriptContext for EngineScriptContext {
             .filter(|(a, b)| *b - *a >= min_bar)
             .max_by_key(|(a, b)| *b - *a);
         let Some((bl, br)) = bar_run else {
+            // Reverse-scale coordinates from native back to design space
+            let inv = self.design_resolution.lock().unwrap().map(|(dw, dh)| {
+                (dw as f64 / iw as f64, dh as f64 / ih as f64)
+            });
+            let row_y = if let Some((_, sy)) = inv { ((y0 + ry) as f64 * sy).round() as i32 } else { y0 + ry };
             return Ok(json!({
                 "ok": false,
                 "reason": "no_bar",
-                "row_screen_y": y0 + ry,
+                "row_screen_y": row_y,
                 "step_x": step_x,
             }));
         };
@@ -1998,27 +2091,51 @@ impl ScriptContext for EngineScriptContext {
             .filter(|(a, b)| *b - *a >= min_player)
             .max_by_key(|(a, b)| *b - *a);
         let Some((pl, pr)) = player_run else {
+            // Reverse-scale coordinates from native back to design space
+            let inv = self.design_resolution.lock().unwrap().map(|(dw, dh)| {
+                (dw as f64 / iw as f64, dh as f64 / ih as f64)
+            });
+            let (sbl, sbr, sbc, sry) = if let Some((sx, sy)) = inv {
+                ((bl as f64 * sx).round() as i32, (br as f64 * sx).round() as i32,
+                 (bar_center as f64 * sx).round() as i32, ((y0 + ry) as f64 * sy).round() as i32)
+            } else {
+                (bl, br, bar_center, y0 + ry)
+            };
             return Ok(json!({
                 "ok": false,
                 "reason": "no_player",
-                "bar_left": bl,
-                "bar_right": br,
-                "bar_center": bar_center,
-                "row_screen_y": y0 + ry,
+                "bar_left": sbl,
+                "bar_right": sbr,
+                "bar_center": sbc,
+                "row_screen_y": sry,
                 "step_x": step_x,
             }));
         };
         let player_center = (pl + pr) / 2;
 
+        // Reverse-scale all output coordinates from native back to design space
+        let inv = self.design_resolution.lock().unwrap().map(|(dw, dh)| {
+            (dw as f64 / iw as f64, dh as f64 / ih as f64)
+        });
+        let (sbl, sbr, sbc, spl, spr, spc, sry) = if let Some((sx, sy)) = inv {
+            ((bl as f64 * sx).round() as i32, (br as f64 * sx).round() as i32,
+             (bar_center as f64 * sx).round() as i32,
+             (pl as f64 * sx).round() as i32, (pr as f64 * sx).round() as i32,
+             (player_center as f64 * sx).round() as i32,
+             ((y0 + ry) as f64 * sy).round() as i32)
+        } else {
+            (bl, br, bar_center, pl, pr, player_center, y0 + ry)
+        };
+
         Ok(json!({
             "ok": true,
-            "bar_left": bl,
-            "bar_right": br,
-            "bar_center": bar_center,
-            "player_left": pl,
-            "player_right": pr,
-            "player_center": player_center,
-            "row_screen_y": y0 + ry,
+            "bar_left": sbl,
+            "bar_right": sbr,
+            "bar_center": sbc,
+            "player_left": spl,
+            "player_right": spr,
+            "player_center": spc,
+            "row_screen_y": sry,
             "step_x": step_x,
         }))
     }
@@ -2080,12 +2197,26 @@ impl ScriptContext for EngineScriptContext {
         let (_, mat) = self.get_decoded_mat_for_vision().await?;
         let iw = mat.cols() as u32;
         let ih = mat.rows() as u32;
-        let x0 = region.x.max(0).min(iw.saturating_sub(1) as i32);
-        let y0 = region.y.max(0).min(ih.saturating_sub(1) as i32);
-        let x1 = (region.x + region.width as i32)
+
+        // Scale region from design resolution to native frame coordinates
+        let native_region = self.reverse_scale_region(&region);
+        // Inverse scale factors for reverse-scaling results back to design space
+        let inv = self.design_resolution.lock().unwrap().map(|(dw, dh)| {
+            (dw as f64 / iw as f64, dh as f64 / ih as f64)
+        });
+        let unscale_x = |x: i32| -> i32 {
+            if let Some((sx, _)) = inv { (x as f64 * sx).round() as i32 } else { x }
+        };
+        let unscale_y = |y: i32| -> i32 {
+            if let Some((_, sy)) = inv { (y as f64 * sy).round() as i32 } else { y }
+        };
+
+        let x0 = native_region.x.max(0).min(iw.saturating_sub(1) as i32);
+        let y0 = native_region.y.max(0).min(ih.saturating_sub(1) as i32);
+        let x1 = (native_region.x + native_region.width as i32)
             .min(iw as i32)
             .max(x0 + 1);
-        let y1 = (region.y + region.height as i32)
+        let y1 = (native_region.y + native_region.height as i32)
             .min(ih as i32)
             .max(y0 + 1);
         let rw = (x1 - x0).max(1) as u32;
@@ -2114,7 +2245,7 @@ impl ScriptContext for EngineScriptContext {
             return Ok(json!({
                 "ok": false,
                 "reason": "no_bar",
-                "row_screen_y": y0 + ry,
+                "row_screen_y": unscale_y(y0 + ry),
                 "step_x": step_x,
                 "mode": "edges",
             }));
@@ -2123,10 +2254,10 @@ impl ScriptContext for EngineScriptContext {
             return Ok(json!({
                 "ok": false,
                 "reason": "no_bar",
-                "row_screen_y": y0 + ry,
+                "row_screen_y": unscale_y(y0 + ry),
                 "step_x": step_x,
                 "mode": "edges",
-                "bar_left": bar_left,
+                "bar_left": unscale_x(bar_left),
             }));
         };
         if bar_left >= bar_right {
@@ -2134,9 +2265,9 @@ impl ScriptContext for EngineScriptContext {
                 "ok": false,
                 "reason": "no_bar",
                 "detail": "bar_edges_inverted",
-                "bar_left": bar_left,
-                "bar_right": bar_right,
-                "row_screen_y": y0 + ry,
+                "bar_left": unscale_x(bar_left),
+                "bar_right": unscale_x(bar_right),
+                "row_screen_y": unscale_y(y0 + ry),
                 "step_x": step_x,
                 "mode": "edges",
             }));
@@ -2167,10 +2298,10 @@ impl ScriptContext for EngineScriptContext {
             return Ok(json!({
                 "ok": false,
                 "reason": "no_player",
-                "bar_left": bar_left,
-                "bar_right": bar_right,
-                "bar_center": (bar_left + bar_right) / 2,
-                "row_screen_y": y0 + ry,
+                "bar_left": unscale_x(bar_left),
+                "bar_right": unscale_x(bar_right),
+                "bar_center": unscale_x((bar_left + bar_right) / 2),
+                "row_screen_y": unscale_y(y0 + ry),
                 "step_x": step_x,
                 "mode": "edges",
             }));
@@ -2179,11 +2310,11 @@ impl ScriptContext for EngineScriptContext {
             return Ok(json!({
                 "ok": false,
                 "reason": "no_player",
-                "bar_left": bar_left,
-                "bar_right": bar_right,
-                "bar_center": (bar_left + bar_right) / 2,
-                "player_left": player_left,
-                "row_screen_y": y0 + ry,
+                "bar_left": unscale_x(bar_left),
+                "bar_right": unscale_x(bar_right),
+                "bar_center": unscale_x((bar_left + bar_right) / 2),
+                "player_left": unscale_x(player_left),
+                "row_screen_y": unscale_y(y0 + ry),
                 "step_x": step_x,
                 "mode": "edges",
             }));
@@ -2194,13 +2325,13 @@ impl ScriptContext for EngineScriptContext {
 
         Ok(json!({
             "ok": true,
-            "bar_left": bar_left,
-            "bar_right": bar_right,
-            "bar_center": bar_center,
-            "player_left": player_left,
-            "player_right": player_right,
-            "player_center": player_center,
-            "row_screen_y": y0 + ry,
+            "bar_left": unscale_x(bar_left),
+            "bar_right": unscale_x(bar_right),
+            "bar_center": unscale_x(bar_center),
+            "player_left": unscale_x(player_left),
+            "player_right": unscale_x(player_right),
+            "player_center": unscale_x(player_center),
+            "row_screen_y": unscale_y(y0 + ry),
             "step_x": step_x,
             "mode": "edges",
         }))
@@ -2222,17 +2353,23 @@ impl ScriptContext for EngineScriptContext {
         let iw = mat.cols() as u32;
         let ih = mat.rows() as u32;
 
-        let (x_start, y_start, x_end, y_end) = if let Some(roi) = opts.and_then(|o| o.get("roi"))
-        {
+        // ROI from scripts is in design resolution; scale to native frame coordinates
+        let native_roi = opts.and_then(|o| o.get("roi")).map(|roi| {
             let rx = roi.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let ry = roi.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let rw = roi.get("width").and_then(|v| v.as_u64()).unwrap_or(iw as u64) as u32;
-            let rh = roi.get("height").and_then(|v| v.as_u64()).unwrap_or(ih as u64) as u32;
+            let rw = roi.get("width").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let rh = roi.get("height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let region = Region { x: rx, y: ry, width: rw, height: rh };
+            self.reverse_scale_region(&region)
+        });
+
+        let (x_start, y_start, x_end, y_end) = if let Some(r) = native_roi
+        {
             (
-                rx.max(0).min(iw.saturating_sub(1) as i32) as u32,
-                ry.max(0).min(ih.saturating_sub(1) as i32) as u32,
-                (rx + rw as i32).min(iw as i32).max(rx) as u32,
-                (ry + rh as i32).min(ih as i32).max(ry) as u32,
+                r.x.max(0).min(iw.saturating_sub(1) as i32) as u32,
+                r.y.max(0).min(ih.saturating_sub(1) as i32) as u32,
+                (r.x + r.width as i32).min(iw as i32).max(r.x) as u32,
+                (r.y + r.height as i32).min(ih as i32).max(r.y) as u32,
             )
         } else {
             (0, 0, iw, ih)
