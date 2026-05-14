@@ -23,25 +23,29 @@ jobs:
       - name: Configure minimal OpenCV
         shell: pwsh
         run: |
-          cmake -S opencv -B opencv-build `
-            -G "Visual Studio 17 2022" `
-            -A x64 `
-            -DCMAKE_INSTALL_PREFIX="$env:INSTALL_DIR" `
-            -DBUILD_LIST=core,imgproc `
-            -DBUILD_opencv_world=OFF `
-            -DBUILD_SHARED_LIBS=ON `
-            -DBUILD_TESTS=OFF `
-            -DBUILD_PERF_TESTS=OFF `
-            -DBUILD_EXAMPLES=OFF `
-            -DBUILD_DOCS=OFF `
-            -DBUILD_JAVA=OFF `
-            -DBUILD_opencv_python_bindings_generator=OFF `
-            -DBUILD_opencv_python_tests=OFF `
-            -DWITH_OPENCL=OFF `
-            -DWITH_FFMPEG=OFF `
-            -DWITH_GSTREAMER=OFF `
-            -DWITH_MSMF=OFF `
-            -DWITH_DSHOW=OFF
+          $cmakeArgs = @(
+            "-S", "opencv",
+            "-B", "opencv-build",
+            "-G", "Visual Studio 17 2022",
+            "-A", "x64",
+            "-DCMAKE_INSTALL_PREFIX=$env:INSTALL_DIR",
+            "-DBUILD_LIST=core,imgproc",
+            "-DBUILD_opencv_world=OFF",
+            "-DBUILD_SHARED_LIBS=ON",
+            "-DBUILD_TESTS=OFF",
+            "-DBUILD_PERF_TESTS=OFF",
+            "-DBUILD_EXAMPLES=OFF",
+            "-DBUILD_DOCS=OFF",
+            "-DBUILD_JAVA=OFF",
+            "-DBUILD_opencv_python_bindings_generator=OFF",
+            "-DBUILD_opencv_python_tests=OFF",
+            "-DWITH_OPENCL=OFF",
+            "-DWITH_FFMPEG=OFF",
+            "-DWITH_GSTREAMER=OFF",
+            "-DWITH_MSMF=OFF",
+            "-DWITH_DSHOW=OFF"
+          )
+          cmake @cmakeArgs
 
       - name: Build and install
         shell: pwsh
