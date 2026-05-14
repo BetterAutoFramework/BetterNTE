@@ -63,8 +63,8 @@ jobs:
         with:
           name: opencv-4.9.0-minimal-windows-x64
           path: |
-            ${{ env.INSTALL_DIR }}\x64\vc17\bin\opencv_core490.dll
-            ${{ env.INSTALL_DIR }}\x64\vc17\bin\opencv_imgproc490.dll
-            ${{ env.INSTALL_DIR }}\x64\vc17\lib\opencv_core490.lib
-            ${{ env.INSTALL_DIR }}\x64\vc17\lib\opencv_imgproc490.lib
+            ${{ env.INSTALL_DIR }}\bin\opencv_core490.dll
+            ${{ env.INSTALL_DIR }}\bin\opencv_imgproc490.dll
+            ${{ env.INSTALL_DIR }}\lib\opencv_core490.lib
+            ${{ env.INSTALL_DIR }}\lib\opencv_imgproc490.lib
             ${{ env.INSTALL_DIR }}\include
